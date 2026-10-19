@@ -1,40 +1,53 @@
 name: Build & Deploy Tuliprox Playlist to Cloudflare Edge
+
 on:
   schedule:
     - cron: "0 */6 * * *"
+  workflow_dispatch:
   push:
     branches: [main]
-  workflow_dispatch:
+
+concurrency:
+  group: tuliprox-edge-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download Official Tuliprox v3.3.0 Binary
+      - name: Download Tuliprox v3.3.0 (x86_64 musl) and verify checksum
         run: |
-          mkdir -p dist
-          curl -fsSL -o tuliprox.tar.gz https://github.com/euzu/tuliprox/releases/download/v3.3.0/tuliprox-v3.3.0-x86_64-unknown-linux-musl.tar.gz || \
-          curl -fsSL -o tuliprox https://github.com/euzu/tuliprox/releases/download/v3.3.0/tuliprox-v3.3.0-x86_64-unknown-linux-musl
-          if [ -f tuliprox.tar.gz ]; then tar -xzf tuliprox.tar.gz; fi
-          chmod +x tuliprox*
-          mv tuliprox* ./tuliprox 2>/dev/null || true
+          set -euo pipefail
+          BASE="https://github.com/euzu/tuliprox/releases/download/v3.3.0"
+          curl -fsSL -o tuliprox "$BASE/tuliprox-v3.3.0-x86_64-unknown-linux-musl"
+          curl -fsSL -o tuliprox.sha256 "$BASE/tuliprox-v3.3.0-x86_64-unknown-linux-musl.sha256"
+          echo "$(cut -d' ' -f1 tuliprox.sha256)  tuliprox" | sha256sum -c -
+          chmod +x tuliprox
+          ./tuliprox --version
 
-      - name: Run Tuliprox in One-Shot CLI Mode
+      - name: Run Tuliprox in one-shot CLI mode
         env:
           PROVIDER_URL: ${{ secrets.PROVIDER_URL }}
           PROVIDER_USER: ${{ secrets.PROVIDER_USER }}
           PROVIDER_PASS: ${{ secrets.PROVIDER_PASS }}
         run: |
-          ./tuliprox -c config/config.yml -i config/source.yml
+          set -euo pipefail
+          ./tuliprox -c config/config.yml -i config/source.yml -l info
+          mkdir -p dist
+          cp work/playlist.m3u dist/playlist.m3u
+          test -s dist/playlist.m3u
+          echo "channels: $(grep -c '^#EXTINF' dist/playlist.m3u)"
+          head -n 3 dist/playlist.m3u
           ls -lh dist/
-          head -n 5 dist/playlist.m3u
 
-      - name: Deploy Static Artifacts & Edge Auth to Cloudflare Pages
+      - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=tuliprox-edge-gateway
+          command: pages deploy dist --project-name=tuliprox-edge-gateway --branch=main

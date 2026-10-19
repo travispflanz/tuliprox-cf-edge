@@ -1,42 +1,42 @@
+// Xtream-compatible /get.php endpoint.
+// Serves the Tuliprox-generated playlist.m3u to credentialed clients only.
 export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  const clientUser = env.CLIENT_USER || "admin";
-  const clientPass = env.CLIENT_PASS || "tuliprox2026";
+  const user = env.CLIENT_USER;
+  const pass = env.CLIENT_PASS;
+  if (!user || !pass) {
+    return new Response("500 Server Misconfigured (CLIENT_USER/CLIENT_PASS not set)", { status: 500 });
+  }
 
-  const username = url.searchParams.get("username") || url.searchParams.get("user");
-  const password = url.searchParams.get("password") || url.searchParams.get("pass") || url.searchParams.get("token");
+  const u = url.searchParams.get("username") || url.searchParams.get("user");
+  const p = url.searchParams.get("password") || url.searchParams.get("pass") || url.searchParams.get("token");
 
-  // Check auth
-  if (!username || !password || username !== clientUser || password !== clientPass) {
-    return new Response("401 Unauthorized - Invalid Xtream Credentials", {
+  if (u !== user || p !== pass) {
+    return new Response("401 Unauthorized", {
       status: 401,
-      headers: { "Content-Type": "text/plain" }
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   }
 
-  // Fetch static playlist.m3u asset from ASSETS or origin
-  const playlistUrl = new URL("/playlist.m3u", url.origin);
-  const assetResponse = await env.ASSETS.fetch(playlistUrl);
+  const assetUrl = new URL("/playlist.m3u", url.origin);
+  const upstream = await env.ASSETS.fetch(assetUrl);
 
-  if (!assetResponse.ok) {
-    return new Response("#EXTM3U\n#EXTINF:-1,Sample Stream\nhttp://example.com/stream.m3u8", {
-      status: 200,
-      headers: {
-        "Content-Type": "audio/x-mpegurl; charset=utf-8",
-        "Access-Control-Allow-Origin": "*"
-      }
-    });
+  if (!upstream.ok) {
+    return new Response("503 Playlist not built yet", { status: 503 });
   }
 
-  const content = await assetResponse.text();
-  return new Response(content, {
+  const body = await upstream.text();
+  const type = url.searchParams.get("type") || "m3u_plus";
+
+  return new Response(body, {
     status: 200,
     headers: {
-      "Content-Type": "audio/x-mpegurl; charset=utf-8",
+      "Content-Type": type.includes("m3u") ? "audio/x-mpegurl; charset=utf-8" : "text/plain; charset=utf-8",
+      "Content-Disposition": 'inline; filename="playlist.m3u"',
+      "Cache-Control": "public, max-age=900",
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "public, max-age=3600"
-    }
+    },
   });
 }

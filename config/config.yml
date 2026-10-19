@@ -1,5 +1,12 @@
+process_parallel: true
 api:
   host: 0.0.0.0
   port: 8901
   web_root: ./web
-storage_dir: ./dist
+working_dir: ./work
+backup_dir: ./backup
+connect_timeout_secs: 10
+update_on_boot: true
+log:
+  sanitize_sensitive_info: true
+  log_level: info

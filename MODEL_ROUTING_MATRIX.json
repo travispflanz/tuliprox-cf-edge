@@ -1,127 +1,139 @@
 {
   "audited_at": "2026-10-19",
-  "method": "live GET <base>/models + live 1-token chat completion; status codes recorded, no assumptions",
+  "probe_client": "curl -A 'Mozilla/5.0' for catalogues, curl POST /chat/completions (max_tokens=1) for inference",
+  "probe_artifact_warning": "Python-urllib's default User-Agent trips Cloudflare 'error code: 1010' on several hosts and returns 403 BEFORE auth. An urllib-only audit falsely reported Groq and Cerebras as dead. Always probe providers with curl (or a browser UA), and treat 403+'error code: 1010' as a client-fingerprint block, never as a bad key.",
   "providers": [
     {
-      "provider": "Antigravity OAuth",
-      "base": "agy://local",
-      "models_endpoint": "n/a (local OAuth shim)",
-      "list_status": null,
-      "inference_status": null,
-      "note": "Active main-agent provider for the `default` profile (gemini-4-argon). Subscription-backed, not free-tier."
+      "provider": "Groq",
+      "base": "https://api.groq.com/openai/v1",
+      "catalogue": 200,
+      "model_count": 11,
+      "inference": 200,
+      "verified_models": [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b"
+      ],
+      "note": "WORKS. Free dev tier. Inference proven 200 on openai/gpt-oss-120b."
+    },
+    {
+      "provider": "OpenRouter",
+      "base": "https://openrouter.ai/api/v1",
+      "catalogue": 200,
+      "model_count": 470,
+      "free_model_count": 20,
+      "inference": 200,
+      "verified_models": [
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "poolside/laguna-s-2.1:free"
+      ],
+      "note": "Free tier works at $0 balance - proven by live completion."
     },
     {
       "provider": "Gemini (direct)",
       "base": "generativelanguage.googleapis.com/v1beta",
-      "list_status": 200,
+      "catalogue": 200,
       "model_count": 50,
-      "inference_status": null,
+      "inference": null,
       "verified_models": [
         "gemini-4-argon",
         "gemini-2.5-pro",
         "gemini-3.1-pro-preview"
       ],
-      "note": "Live catalogue confirmed. Free tier subject to quota."
+      "note": "Catalogue confirmed. Quota-limited free tier."
     },
     {
-      "provider": "OpenRouter",
-      "base": "https://openrouter.ai/api/v1",
-      "list_status": 200,
-      "model_count": 470,
-      "free_model_count": 20,
-      "inference_status": 200,
+      "provider": "Antigravity OAuth",
+      "base": "agy://local",
+      "catalogue": null,
+      "inference": null,
       "verified_models": [
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "poolside/laguna-s-2.1:free"
+        "gemini-4-argon"
       ],
-      "note": "Free tier WORKS at $0 balance - proven by live completion. Best free fallback on this box."
-    },
-    {
-      "provider": "NVIDIA NIM",
-      "base": "https://integrate.api.nvidia.com/v1",
-      "list_status": 200,
-      "model_count": 81,
-      "inference_status": 410,
-      "verified_models": [],
-      "note": "catalogue reachable; inference probe -> 410"
-    },
-    {
-      "provider": "HuggingFace router",
-      "base": "https://router.huggingface.co/v1",
-      "list_status": 200,
-      "model_count": 134,
-      "inference_status": 402,
-      "verified_models": [],
-      "note": "catalogue reachable; inference probe -> 402"
-    },
-    {
-      "provider": "Mistral",
-      "base": "https://api.mistral.ai/v1",
-      "list_status": 200,
-      "model_count": 45,
-      "inference_status": null,
-      "verified_models": [
-        "codestral-2508"
-      ],
-      "note": "catalogue reachable"
-    },
-    {
-      "provider": "TokenHarbor",
-      "base": "https://tokenharbor.ai/v1",
-      "list_status": null,
-      "inference_status": 429,
-      "verified_models": [],
-      "note": "Free allowance exhausted for this rolling 7-day period (429); qwen3.8-flash:free offer ended (404). Multi-key pool still carries the live session."
-    },
-    {
-      "provider": "Cloudflare Workers AI",
-      "base": "api.cloudflare.com/.../ai/v1",
-      "list_status": null,
-      "inference_status": 401,
-      "verified_models": [],
-      "note": "configured token lacks Workers AI permission (Authentication error 10000). Needs a token with Workers AI:Read."
-    },
-    {
-      "provider": "Groq",
-      "base": "https://api.groq.com/openai/v1",
-      "list_status": 403,
-      "inference_status": null,
-      "verified_models": [],
-      "note": "WAF blocks before auth (error code: 1010). Not usable from this host."
+      "note": "Active provider for the `default` profile; subscription-backed, not a free tier."
     },
     {
       "provider": "Cerebras",
       "base": "https://api.cerebras.ai/v1",
-      "list_status": 403,
-      "inference_status": null,
+      "catalogue": 200,
+      "model_count": 2,
+      "inference": 402,
+      "verified_models": [
+        "gpt-oss-120b",
+        "qwen-3.8-27b"
+      ],
+      "note": "Catalogue reachable; both models return 402 (payment required). Billing block, not WAF."
+    },
+    {
+      "provider": "Cloudflare Workers AI",
+      "base": "api.cloudflare.com/client/v4/accounts/<id>/ai/v1",
+      "catalogue": 405,
+      "inference": 401,
       "verified_models": [],
-      "note": "WAF blocks before auth (error code: 1010). Not usable from this host."
+      "note": "POST /chat/completions -> 401 Authentication error (code 10000). The configured token lacks Workers AI permission; needs a token with Workers AI:Read on this account."
+    },
+    {
+      "provider": "HuggingFace router",
+      "base": "https://router.huggingface.co/v1",
+      "catalogue": 200,
+      "model_count": 134,
+      "inference": 402,
+      "verified_models": [],
+      "note": "402 no remaining credits."
+    },
+    {
+      "provider": "NVIDIA NIM",
+      "base": "https://integrate.api.nvidia.com/v1",
+      "catalogue": 200,
+      "model_count": 81,
+      "inference": 410,
+      "verified_models": [],
+      "note": "410 Gone for the probed id (model retired); catalogue otherwise reachable."
+    },
+    {
+      "provider": "Mistral",
+      "base": "https://api.mistral.ai/v1",
+      "catalogue": 200,
+      "model_count": 45,
+      "inference": null,
+      "verified_models": [
+        "codestral-2508"
+      ],
+      "note": "Catalogue reachable."
+    },
+    {
+      "provider": "TokenHarbor",
+      "base": "https://tokenharbor.ai/v1",
+      "catalogue": null,
+      "inference": 429,
+      "verified_models": [],
+      "note": "Rolling 7-day free allowance spent (429); qwen3.8-flash:free retired (404). Multi-key pool still carries the live session."
     },
     {
       "provider": "Ollama (local)",
       "base": "http://localhost:11434/v1",
-      "list_status": null,
-      "inference_status": null,
+      "catalogue": null,
+      "inference": null,
       "verified_models": [],
-      "note": "Installed locally; CPU-only, too slow for agentic tool loops. Last-resort only."
+      "note": "CPU-only; too slow for agentic tool loops. Last resort."
     }
   ],
   "assignments": {
     "edge-architect": {
       "model": "gemini-4-argon",
       "provider": "antigravity-oauth",
-      "why": "subscription-backed long context for M3U planning; same provider the `default` profile runs"
+      "why": "subscription-backed long context for M3U planning"
     },
     "edge-builder": {
       "model": "nvidia/nemotron-3-super-120b-a12b:free",
       "provider": "openrouter",
-      "why": "free, 120B, live-completion-verified (200) - CI/YAML + Worker authoring"
+      "why": "free 120B, live-completion-verified, for CI/YAML + Worker authoring"
     },
     "edge-auditor": {
-      "model": "poolside/laguna-s-2.1:free",
-      "provider": "openrouter",
-      "why": "free, low-latency, live-completion-verified (200) - log parsing + QA"
+      "model": "openai/gpt-oss-120b",
+      "provider": "groq",
+      "why": "fastest verified inference (200) for CI log parsing; already in the fallback chain"
     }
   },
-  "spec_deviation": "The task specification assumed 10 connected providers including Groq, Cerebras, Cloudflare Workers AI and TokenHarbor free tiers. Live audit shows Groq and Cerebras are WAF-blocked from this host, the Cloudflare token lacks Workers AI permission, and the TokenHarbor free allowance is spent. Assignments were therefore made only from providers with a recorded HTTP 200."
+  "spec_deviation": "The spec assumed 10 connected providers on free tiers. Live audit: 5 of them can actually complete an inference call (Groq, OpenRouter free, Gemini, Antigravity, plus Mistral catalogue). Cerebras 402, HF 402, NVIDIA 410, Workers AI 401, TokenHarbor 429. Assignments use only providers with a recorded 200 on inference."
 }

@@ -25,3 +25,15 @@ Below is the dynamic routing matrix established during Phase 0B:
 3. GitHub Action downloads pre-compiled Tuliprox v3.3.0 musl binary, parses input playlists into `dist/`.
 4. Wrangler deploys `dist/` and `functions/` to Cloudflare Pages project (`tuliprox-edge-gateway`).
 5. Clients (TiviMate / VLC) fetch edge playlist via `https://<project>.pages.dev/get.php?username=${CLIENT_USER}&password=${CLIENT_PASS}&type=m3u_plus&output=ts`.
+
+
+---
+
+## Build notes (what actually shipped)
+
+- Tuliprox v3.3.0 is distributed as a **bare musl binary** (33,891,968 bytes), not a tarball.
+  The workflow downloads it plus the published `.sha256` and verifies before running.
+- Storage key is `working_dir:` — the spec's `storage_dir:` is not a real key.
+- `wrangler pages deploy dist` bundles `./functions` from the **CWD**, so the deploy runs from the repo root.
+- `wrangler.yml` deleted: an unvalidated `mapping.yml` was dropped rather than shipped.
+- Node 22 is required by wrangler; CI uses the runner's Node, local use needs `nvm use 22`.

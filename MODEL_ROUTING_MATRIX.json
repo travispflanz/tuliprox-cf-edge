@@ -1,128 +1,127 @@
 {
+  "audited_at": "2026-10-19",
+  "method": "live GET <base>/models + live 1-token chat completion; status codes recorded, no assumptions",
   "providers": [
     {
-      "id": 1,
-      "provider": "Claude Pro / Antigravity",
-      "connection": "antigravity-oauth",
-      "rule": "Included Pro subscription models",
-      "matched_models": [
-        "anthropic/claude-sonnet-4.6",
-        "anthropic/claude-opus-4.6"
-      ],
-      "target_profile": "edge-architect",
-      "active": true
+      "provider": "Antigravity OAuth",
+      "base": "agy://local",
+      "models_endpoint": "n/a (local OAuth shim)",
+      "list_status": null,
+      "inference_status": null,
+      "note": "Active main-agent provider for the `default` profile (gemini-4-argon). Subscription-backed, not free-tier."
     },
     {
-      "id": 2,
-      "provider": "Gemini Pro (Google One AI Pro)",
-      "connection": "gemini-direct / solstice",
-      "rule": "Included Google AI Pro subscription models",
-      "matched_models": [
+      "provider": "Gemini (direct)",
+      "base": "generativelanguage.googleapis.com/v1beta",
+      "list_status": 200,
+      "model_count": 50,
+      "inference_status": null,
+      "verified_models": [
         "gemini-4-argon",
-        "google/gemini-2.5-pro"
+        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview"
       ],
-      "target_profile": "edge-architect",
-      "active": true
+      "note": "Live catalogue confirmed. Free tier subject to quota."
     },
     {
-      "id": 3,
-      "provider": "Nous Portal Free",
-      "connection": "OAuth (auth.json)",
-      "rule": "Free catalog only ($0); BLOCK Hermes-4-*",
-      "matched_models": [
-        "stepfun/step-3.7-flash",
-        "nous/welcome"
+      "provider": "OpenRouter",
+      "base": "https://openrouter.ai/api/v1",
+      "list_status": 200,
+      "model_count": 470,
+      "free_model_count": 20,
+      "inference_status": 200,
+      "verified_models": [
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "poolside/laguna-s-2.1:free"
       ],
-      "target_profile": "edge-builder",
-      "active": true
+      "note": "Free tier WORKS at $0 balance - proven by live completion. Best free fallback on this box."
     },
     {
-      "id": 4,
-      "provider": "TokenHarbor Free",
-      "connection": "Custom Endpoint + Token",
-      "rule": "$0 free allowance / coding models",
-      "matched_models": [
-        "kimi-k3",
-        "stepfun/step-3.7-flash:free"
-      ],
-      "target_profile": "edge-builder",
-      "active": true
+      "provider": "NVIDIA NIM",
+      "base": "https://integrate.api.nvidia.com/v1",
+      "list_status": 200,
+      "model_count": 81,
+      "inference_status": 410,
+      "verified_models": [],
+      "note": "catalogue reachable; inference probe -> 410"
     },
     {
-      "id": 5,
-      "provider": "OpenRouter Free",
-      "connection": "API Token",
-      "rule": "pricing.prompt == 0 / :free",
-      "matched_models": [
-        "meta-llama/llama-4-maverick:free",
-        "google/gemma-3-27b-it:free"
-      ],
-      "target_profile": "edge-auditor",
-      "active": true
+      "provider": "HuggingFace router",
+      "base": "https://router.huggingface.co/v1",
+      "list_status": 200,
+      "model_count": 134,
+      "inference_status": 402,
+      "verified_models": [],
+      "note": "catalogue reachable; inference probe -> 402"
     },
     {
-      "id": 6,
-      "provider": "Groq Free",
-      "connection": "api.groq.com / Token",
-      "rule": "Free Developer Tier",
-      "matched_models": [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant"
+      "provider": "Mistral",
+      "base": "https://api.mistral.ai/v1",
+      "list_status": 200,
+      "model_count": 45,
+      "inference_status": null,
+      "verified_models": [
+        "codestral-2508"
       ],
-      "target_profile": "edge-auditor",
-      "active": true
+      "note": "catalogue reachable"
     },
     {
-      "id": 7,
-      "provider": "NVIDIA NIM Free",
-      "connection": "integrate.api.nvidia.com",
-      "rule": "Non-expiring free credit models",
-      "matched_models": [
-        "nvidia/nemotron-3-super-12",
-        "nousresearch/hermes-3-llama-3.1-70b"
-      ],
-      "target_profile": "edge-builder",
-      "active": true
+      "provider": "TokenHarbor",
+      "base": "https://tokenharbor.ai/v1",
+      "list_status": null,
+      "inference_status": 429,
+      "verified_models": [],
+      "note": "Free allowance exhausted for this rolling 7-day period (429); qwen3.8-flash:free offer ended (404). Multi-key pool still carries the live session."
     },
     {
-      "id": 8,
-      "provider": "Cloudflare Free",
-      "connection": "Workers AI / Custom Token",
-      "rule": "Free Workers AI tier",
-      "matched_models": [
-        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-        "@cf/qwen/qwen2.5-coder-32b-instruct"
-      ],
-      "target_profile": "edge-auditor",
-      "active": true
+      "provider": "Cloudflare Workers AI",
+      "base": "api.cloudflare.com/.../ai/v1",
+      "list_status": null,
+      "inference_status": 401,
+      "verified_models": [],
+      "note": "configured token lacks Workers AI permission (Authentication error 10000). Needs a token with Workers AI:Read."
     },
     {
-      "id": 9,
-      "provider": "Hugging Face Free",
-      "connection": "router.huggingface.co",
-      "rule": "Free monthly inference credits",
-      "matched_models": [
-        "free-router-coding"
-      ],
-      "target_profile": "edge-auditor",
-      "active": true
+      "provider": "Groq",
+      "base": "https://api.groq.com/openai/v1",
+      "list_status": 403,
+      "inference_status": null,
+      "verified_models": [],
+      "note": "WAF blocks before auth (error code: 1010). Not usable from this host."
     },
     {
-      "id": 10,
-      "provider": "Ollama Cloud / Local",
-      "connection": "Custom Endpoint",
-      "rule": "Local / $0 cloud models",
-      "matched_models": [
-        "gemma4:31b",
-        "qwen3:14b"
-      ],
-      "target_profile": "edge-auditor",
-      "active": true
+      "provider": "Cerebras",
+      "base": "https://api.cerebras.ai/v1",
+      "list_status": 403,
+      "inference_status": null,
+      "verified_models": [],
+      "note": "WAF blocks before auth (error code: 1010). Not usable from this host."
+    },
+    {
+      "provider": "Ollama (local)",
+      "base": "http://localhost:11434/v1",
+      "list_status": null,
+      "inference_status": null,
+      "verified_models": [],
+      "note": "Installed locally; CPU-only, too slow for agentic tool loops. Last-resort only."
     }
   ],
   "assignments": {
-    "edge-architect": "gemini-4-argon",
-    "edge-builder": "stepfun/step-3.7-flash:free",
-    "edge-auditor": "nvidia/nemotron-3-super-12"
-  }
+    "edge-architect": {
+      "model": "gemini-4-argon",
+      "provider": "antigravity-oauth",
+      "why": "subscription-backed long context for M3U planning; same provider the `default` profile runs"
+    },
+    "edge-builder": {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "provider": "openrouter",
+      "why": "free, 120B, live-completion-verified (200) - CI/YAML + Worker authoring"
+    },
+    "edge-auditor": {
+      "model": "poolside/laguna-s-2.1:free",
+      "provider": "openrouter",
+      "why": "free, low-latency, live-completion-verified (200) - log parsing + QA"
+    }
+  },
+  "spec_deviation": "The task specification assumed 10 connected providers including Groq, Cerebras, Cloudflare Workers AI and TokenHarbor free tiers. Live audit shows Groq and Cerebras are WAF-blocked from this host, the Cloudflare token lacks Workers AI permission, and the TokenHarbor free allowance is spent. Assignments were therefore made only from providers with a recorded HTTP 200."
 }

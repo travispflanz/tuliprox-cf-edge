@@ -1,0 +1,128 @@
+{
+  "providers": [
+    {
+      "id": 1,
+      "provider": "Claude Pro / Antigravity",
+      "connection": "antigravity-oauth",
+      "rule": "Included Pro subscription models",
+      "matched_models": [
+        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-opus-4.6"
+      ],
+      "target_profile": "edge-architect",
+      "active": true
+    },
+    {
+      "id": 2,
+      "provider": "Gemini Pro (Google One AI Pro)",
+      "connection": "gemini-direct / solstice",
+      "rule": "Included Google AI Pro subscription models",
+      "matched_models": [
+        "gemini-4-argon",
+        "google/gemini-2.5-pro"
+      ],
+      "target_profile": "edge-architect",
+      "active": true
+    },
+    {
+      "id": 3,
+      "provider": "Nous Portal Free",
+      "connection": "OAuth (auth.json)",
+      "rule": "Free catalog only ($0); BLOCK Hermes-4-*",
+      "matched_models": [
+        "stepfun/step-3.7-flash",
+        "nous/welcome"
+      ],
+      "target_profile": "edge-builder",
+      "active": true
+    },
+    {
+      "id": 4,
+      "provider": "TokenHarbor Free",
+      "connection": "Custom Endpoint + Token",
+      "rule": "$0 free allowance / coding models",
+      "matched_models": [
+        "kimi-k3",
+        "stepfun/step-3.7-flash:free"
+      ],
+      "target_profile": "edge-builder",
+      "active": true
+    },
+    {
+      "id": 5,
+      "provider": "OpenRouter Free",
+      "connection": "API Token",
+      "rule": "pricing.prompt == 0 / :free",
+      "matched_models": [
+        "meta-llama/llama-4-maverick:free",
+        "google/gemma-3-27b-it:free"
+      ],
+      "target_profile": "edge-auditor",
+      "active": true
+    },
+    {
+      "id": 6,
+      "provider": "Groq Free",
+      "connection": "api.groq.com / Token",
+      "rule": "Free Developer Tier",
+      "matched_models": [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant"
+      ],
+      "target_profile": "edge-auditor",
+      "active": true
+    },
+    {
+      "id": 7,
+      "provider": "NVIDIA NIM Free",
+      "connection": "integrate.api.nvidia.com",
+      "rule": "Non-expiring free credit models",
+      "matched_models": [
+        "nvidia/nemotron-3-super-12",
+        "nousresearch/hermes-3-llama-3.1-70b"
+      ],
+      "target_profile": "edge-builder",
+      "active": true
+    },
+    {
+      "id": 8,
+      "provider": "Cloudflare Free",
+      "connection": "Workers AI / Custom Token",
+      "rule": "Free Workers AI tier",
+      "matched_models": [
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "@cf/qwen/qwen2.5-coder-32b-instruct"
+      ],
+      "target_profile": "edge-auditor",
+      "active": true
+    },
+    {
+      "id": 9,
+      "provider": "Hugging Face Free",
+      "connection": "router.huggingface.co",
+      "rule": "Free monthly inference credits",
+      "matched_models": [
+        "free-router-coding"
+      ],
+      "target_profile": "edge-auditor",
+      "active": true
+    },
+    {
+      "id": 10,
+      "provider": "Ollama Cloud / Local",
+      "connection": "Custom Endpoint",
+      "rule": "Local / $0 cloud models",
+      "matched_models": [
+        "gemma4:31b",
+        "qwen3:14b"
+      ],
+      "target_profile": "edge-auditor",
+      "active": true
+    }
+  ],
+  "assignments": {
+    "edge-architect": "gemini-4-argon",
+    "edge-builder": "stepfun/step-3.7-flash:free",
+    "edge-auditor": "nvidia/nemotron-3-super-12"
+  }
+}

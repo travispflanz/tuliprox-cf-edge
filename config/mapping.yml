@@ -1,0 +1,7 @@
+groups:
+  - name: "Sports"
+    pattern: "(?i).*(sports|espn|fox sports|sky sports).*"
+  - name: "News"
+    pattern: "(?i).*(news|cnn|bbc|msnbc|fox news).*"
+  - name: "General"
+    pattern: ".*"

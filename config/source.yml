@@ -1,0 +1,15 @@
+inputs:
+  - type: m3u
+    name: primary_input
+    url: "${env:PROVIDER_URL}"
+    cache_duration: 1d
+
+sources:
+  - inputs:
+      - primary_input
+    targets:
+      - name: clean_list
+        filter: '(Group ~ ".*") AND NOT (Group ~ "(?i).*Shopping.*")'
+        output:
+          - type: m3u
+            filename: playlist.m3u

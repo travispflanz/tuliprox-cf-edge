@@ -1,0 +1,7 @@
+# Custom EPG / Channel Template Configuration
+version: "1.0"
+templates:
+  default:
+    tvg_id: "{id}"
+    tvg_name: "{name}"
+    group_title: "{group}"

@@ -41,6 +41,28 @@ jobs:
           chmod +x tuliprox
           ./tuliprox --version
 
+      # Fail fast and legibly: Tuliprox reports missing credentials only as
+      # "username and password are mandatory", which hides that the SECRET is empty.
+      - name: Verify required secrets are populated
+        env:
+          PROVIDER_URL: ${{ secrets.PROVIDER_URL }}
+          PROVIDER_USER: ${{ secrets.PROVIDER_USER }}
+          PROVIDER_PASS: ${{ secrets.PROVIDER_PASS }}
+          CLIENT_USER: ${{ secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in PROVIDER_URL PROVIDER_USER PROVIDER_PASS CLIENT_USER CLIENT_PASS; do
+            if [ -z "${!v}" ]; then missing="$missing $v"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::these repository secrets are empty or unset:$missing"
+            echo "Set them with: gh secret set NAME  (an empty secret is indistinguishable from an unset one at runtime)"
+            exit 1
+          fi
+          echo "all required secrets present"
+
       # Fetches, filters and normalises the playlist. `-H` pins the working dir to the repo,
       # otherwise Tuliprox derives its home from the binary's own location.
       - name: Run Tuliprox one-shot (Xtream in -> m3u + category map)

@@ -1,9 +1,23 @@
 /**
- * Live/VOD stream proxy.
+ * Live/VOD stream delivery.
  *
- * The player's URL tells us the stream id; we rebuild the provider URL from env and fetch it
- * server-side, following the provider's 302 to its signed CDN URL. The provider credentials
- * and the CDN token therefore never reach the player — they only ever exist inside this Worker.
+ * WHY THERE IS A FALLBACK
+ * -----------------------
+ * The happy path proxies the stream through the edge, which hides the provider credentials
+ * and their signed CDN token completely.
+ *
+ * But many providers refuse datacenter IP ranges, and Cloudflare's egress is one of them.
+ * Verified against the live provider: the identical request returns 200 from a residential
+ * IP and 403 from Cloudflare, on every channel. When that happens a proxy can never work,
+ * so instead of failing we hand the player a 302 to the provider and let it fetch the stream
+ * from its own (residential) IP — which is exactly how the provider intends clients to work.
+ *
+ * The credentials stay out of every static asset either way: the redirect is only ever
+ * emitted to a caller that already passed CLIENT_USER/CLIENT_PASS auth.
+ *
+ * STREAM_MODE:
+ *   proxy     (default) — try the edge fetch, fall back to a redirect on refusal
+ *   redirect            — always redirect (skip the doomed fetch, saves a round trip)
  */
 import { safeEqual, upstreamStream, upstreamConfigured } from './auth.js';
 import { text, unauthorized, serverError, options } from './respond.js';
@@ -15,6 +29,19 @@ const CONTENT_TYPES = {
   mkv: 'video/x-matroska',
   avi: 'video/x-msvideo',
 };
+
+function redirectTo(target, reason) {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: target,
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+      'X-Stream-Mode': 'redirect-fallback',
+      'X-Stream-Fallback-Reason': reason,
+    },
+  });
+}
 
 export async function handleStream(context, kind) {
   const { request, env, params } = context;
@@ -36,6 +63,10 @@ export async function handleStream(context, kind) {
 
   const target = upstreamStream(env, kind, id, ext);
 
+  if ((env.STREAM_MODE || 'proxy') === 'redirect') {
+    return redirectTo(target, 'mode=redirect');
+  }
+
   const headers = { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' };
   const range = request.headers.get('Range');
   if (range) headers['Range'] = range;
@@ -44,17 +75,19 @@ export async function handleStream(context, kind) {
   try {
     upstream = await fetch(target, { headers, redirect: 'follow' });
   } catch (err) {
-    return text(`502 Upstream unreachable: ${err && err.message ? err.message : 'fetch failed'}`, 502);
+    // Network-level refusal from our egress — let the player try from its own.
+    return redirectTo(target, `fetch-error:${(err && err.message ? err.message : 'unknown').slice(0, 60)}`);
   }
 
   if (!upstream.ok && upstream.status !== 206) {
-    return text(`502 Upstream returned ${upstream.status}`, 502);
+    return redirectTo(target, `upstream-${upstream.status}`);
   }
 
   const out = new Headers();
   out.set('Content-Type', CONTENT_TYPES[ext] || upstream.headers.get('Content-Type') || 'application/octet-stream');
   out.set('Cache-Control', 'no-store');
   out.set('Access-Control-Allow-Origin', '*');
+  out.set('X-Stream-Mode', 'proxy');
   const ct = upstream.headers.get('Content-Range');
   if (ct) out.set('Content-Range', ct);
   const al = upstream.headers.get('Accept-Ranges');

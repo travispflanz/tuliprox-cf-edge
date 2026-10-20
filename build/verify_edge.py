@@ -163,6 +163,31 @@ if streams:
           f"sid={got[0]} ct={got[1]} bytes={got[2]}" if got
           else f"no working channel in {tried} probed (dead channels / max_connections=1)")
 
+    # Report HOW the edge delivered it: a proxied body (credentials fully hidden) or a 302 to
+    # the provider because our egress is refused (common for datacenter/Cloudflare IPs).
+    if got is not None:
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            r = urllib.request.Request(f"{BASE}/live/{CU}/{CP}/{got[0]}.ts",
+                                       headers={"User-Agent": "VLC/3.0.20"})
+            with opener.open(r, timeout=35) as resp:
+                mode = resp.headers.get("X-Stream-Mode", "")
+                check("stream delivery mode is reported", mode in ("proxy", "redirect-fallback"), f"mode={mode}")
+                if mode == "redirect-fallback":
+                    print(f"      provider refuses our egress "
+                          f"({resp.headers.get('X-Stream-Fallback-Reason', '?')}); "
+                          f"player fetches from its own IP")
+        except urllib.error.HTTPError as e:
+            mode = e.headers.get("X-Stream-Mode", "") if e.headers else ""
+            check("stream delivery mode is reported", mode in ("proxy", "redirect-fallback"),
+                  f"http {e.code} mode={mode}")
+        except Exception as e:
+            check("stream delivery mode is reported", False, f"{e}")
+
     sid_probe = got[0] if got else candidates[0]
     for path, want, label in [
         (f"/live/bad/bad/{sid_probe}.ts", 401, "wrong creds on stream -> 401"),

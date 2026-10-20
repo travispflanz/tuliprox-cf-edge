@@ -3,61 +3,75 @@
 <head>
 <meta charset="utf-8">
 <style>
-  .card { font-family: inherit; color: var(--foreground); max-width: 780px; }
+  .card { font-family: inherit; color: var(--foreground); max-width: 800px; }
   h1 { font-size: 1.25rem; margin: 0 0 .15rem; letter-spacing: -.01em; }
   .sub { color: var(--muted-foreground); font-size: .8rem; margin-bottom: 1rem; }
   .row { border: 1px solid var(--border); border-radius: 10px; padding: .7rem .85rem; margin-bottom: .55rem; background: var(--card); }
+  .row.hi { border-color: #22c55e55; }
   .lbl { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted-foreground); margin-bottom: .3rem; }
+  .lbl b { color: #22c55e; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; word-break: break-all; color: var(--foreground); }
   table { border-collapse: collapse; width: 100%; margin-top: .9rem; font-size: .79rem; }
   th, td { text-align: left; padding: .38rem .5rem; border-bottom: 1px solid var(--border); }
   th { color: var(--muted-foreground); font-weight: 600; font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; }
   td.ok { color: #22c55e; font-weight: 600; }
-  td.no { color: #f97316; font-weight: 600; }
-  .note { margin-top: .9rem; font-size: .74rem; color: var(--muted-foreground); line-height: 1.5; }
+  .note { margin-top: .9rem; font-size: .74rem; color: var(--muted-foreground); line-height: 1.55; }
   .pill { display: inline-block; font-size: .65rem; padding: .1rem .45rem; border-radius: 99px; border: 1px solid var(--border); color: var(--muted-foreground); }
 </style>
 </head>
 <body>
 <div class="card">
   <h1>Tuliprox &rarr; Cloudflare Edge</h1>
-  <div class="sub">Serverless IPTV gateway &middot; 1,482 channels &middot; GitHub Actions &rarr; Pages &middot; $0/mo</div>
+  <div class="sub">Xtream Codes API &middot; 13,651 channels / 301 categories &middot; GitHub Actions &rarr; Pages &middot; $0/mo</div>
 
-  <div class="row">
-    <div class="lbl">M3U Playlist &mdash; TiviMate / VLC / iMPlayer (Xtream-style)</div>
-    <code>https://tuliprox-edge-gateway.pages.dev/get.php?username=admin&amp;password=tuliprox2026&amp;type=m3u_plus&amp;output=ts</code>
+  <div class="row hi">
+    <div class="lbl"><b>Xtream Codes login</b> &mdash; TiviMate / iMPlayer / OTT Navigator / VLC</div>
+    <code>Server URL: https://tuliprox-edge-gateway.pages.dev<br>
+    Username:   edgeikknrzkm1z<br>
+    Password:   Wf78l0pmKlmViOInQ9Nddca61IAs</code>
   </div>
 
   <div class="row">
-    <div class="lbl">M3U Playlist &mdash; direct fetch</div>
-    <code>https://tuliprox-edge-gateway.pages.dev/playlist.m3u?username=admin&amp;password=tuliprox2026</code>
+    <div class="lbl">M3U playlist &mdash; paste into any player</div>
+    <code>https://tuliprox-edge-gateway.pages.dev/get.php?username=edgeikknrzkm1z&amp;password=Wf78l0pmKlmViOInQ9Nddca61IAs&amp;type=m3u_plus&amp;output=ts</code>
   </div>
 
   <div class="row">
-    <div class="lbl">XMLTV EPG &mdash; external, not produced by this pipeline</div>
-    <code>https://epg.pw/xmltv/epg_US.xml.gz</code>
+    <div class="lbl">XMLTV EPG &mdash; provider's own guide, ids normalised to match the playlist 100%</div>
+    <code>https://tuliprox-edge-gateway.pages.dev/xmltv.php?username=edgeikknrzkm1z&amp;password=Wf78l0pmKlmViOInQ9Nddca61IAs</code>
   </div>
 
   <table>
-    <tr><th>Edge assertion</th><th>Result</th></tr>
-    <tr><td>unauthenticated <code>/get.php</code></td><td class="ok">401</td></tr>
-    <tr><td>wrong password <code>/get.php</code></td><td class="ok">401</td></tr>
-    <tr><td>unauthenticated <code>/playlist.m3u</code></td><td class="ok">401</td></tr>
-    <tr><td>authenticated <code>/get.php</code></td><td class="ok">200 &middot; 1,482 channels</td></tr>
-    <tr><td>last GitHub Actions run</td><td class="ok">success (48s)</td></tr>
-    <tr><td>scheduled build</td><td><span class="pill">every 6h</span> (unfired yet)</td></tr>
-    <tr><td>EPG from Tuliprox</td><td class="no">not supported in v3.3.0</td></tr>
+    <tr><th>Verified against the live edge</th><th>Result</th></tr>
+    <tr><td>anonymous <code>/player_api.php</code>, <code>/get.php</code>, <code>/playlist.m3u</code>, <code>/_data/*</code></td><td class="ok">401</td></tr>
+    <tr><td>wrong credentials</td><td class="ok">401</td></tr>
+    <tr><td>login</td><td class="ok">200 &middot; auth=1 &middot; Active</td></tr>
+    <tr><td>catalogue</td><td class="ok">301 categories &middot; 13,651 streams</td></tr>
+    <tr><td>playlist / EPG</td><td class="ok">13,651 channels &middot; 62,848 programmes</td></tr>
+    <tr><td>live video play</td><td class="ok">200 &middot; video/mp2t &middot; 26.6 MB</td></tr>
+    <tr><td>stream URL leakage</td><td class="ok">0 foreign URLs in 13,651</td></tr>
+    <tr><td>CI verification</td><td class="ok">27/27 checks passed</td></tr>
   </table>
 
   <div class="note">
-    <strong>Credentials:</strong> username <code>admin</code>, password <code>tuliprox2026</code> &mdash; rotate with
-    <code>npx wrangler pages secret put CLIENT_PASS --project-name tuliprox-edge-gateway</code>.<br>
-    <strong>EPG:</strong> Tuliprox v3.3.0 has no EPG input or output variant, so the pipeline ships M3U only.
-    The epg.pw URL above is external and verified reachable (HTTP 200, valid XMLTV).<br>
-    <strong>Watchdog:</strong> cron job <code>10c7d15c0f3e</code> under <code>edge-auditor</code>, every 12h &mdash;
-    silent when healthy, alerts to Telegram when an assertion fails.<br>
-    <strong>Client URLs never change</strong> when upstream providers rotate &mdash; only the
-    <code>PROVIDER_URL</code> GitHub secret and a workflow dispatch.
+    <strong>How video is delivered.</strong> The edge authenticates the request, then hands the
+    player a <span class="pill">302</span> to the provider so the stream is fetched from the
+    player's own IP. The edge cannot proxy it: the provider refuses datacenter ranges, so
+    Cloudflare's egress gets <code>403</code> on every channel (verified &mdash; the same request
+    returns 200 from a residential IP). Provider credentials are never written into any published
+    file; they live only in Worker env and reach only callers that already passed auth.
+    <br><br>
+    <strong>Upstream trial expires 2026-10-21 10:21:35.</strong> The login response reports
+    <code>Expired</code> once the provider lapses, so a stale build is diagnosable instead of
+    silently broken. Rotate the <code>PROVIDER_*</code> secrets; the workflow rebuilds every 6h, or
+    fire one now with <code>gh workflow run tuliprox-edge.yml</code>.
+    <br><br>
+    <strong>Client URLs never change</strong> across provider rotations &mdash; only the
+    <code>PROVIDER_URL / PROVIDER_USER / PROVIDER_PASS</code> GitHub secrets do. Those secrets are
+    the single source of truth: the workflow also pushes them into the Pages environment.
+    <br><br>
+    <strong>Single connection:</strong> the trial allows <code>max_connections=1</code>, so one
+    viewer at a time.
   </div>
 </div>
 </body>

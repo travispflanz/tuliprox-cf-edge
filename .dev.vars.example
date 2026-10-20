@@ -1,0 +1,12 @@
+# Local development bindings for `wrangler pages dev dist`.
+# Copy to .dev.vars (which is gitignored) and fill in real values.
+#
+# CLIENT_*   — what your player logs in with (you choose these)
+# UPSTREAM_* — the IPTV provider's credentials (secrets; never committed, never baked into dist)
+
+CLIENT_USER="edgeUser123"
+CLIENT_PASS="edgePass456"
+
+UPSTREAM_URL="http://provider.example.com"
+UPSTREAM_USER="providerUser"
+UPSTREAM_PASS="providerPass"

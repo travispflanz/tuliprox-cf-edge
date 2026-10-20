@@ -1,15 +1,30 @@
+# Tuliprox input: the provider's Xtream Codes API.
+# Credentials come from GitHub Actions secrets; nothing here is secret on its own.
+#
+# LIVE-ONLY BY DESIGN: VOD/series are skipped so the edge index stays small enough to serve
+# from a static host with ~0 CPU per request. To include movies/series, set both
+# `xtream_skip_vod` and `xtream_skip_series` to false and expect a multi-hundred-MB payload.
 inputs:
-  - type: m3u
-    name: primary_input
+  - name: provider
+    type: xtream
     url: "${env:PROVIDER_URL}"
-
+    username: "${env:PROVIDER_USER}"
+    password: "${env:PROVIDER_PASS}"
+    options:
+      xtream_skip_vod: true
+      xtream_skip_series: true
+    max_connections: 1
 
 sources:
   - inputs:
-      - primary_input
+      - provider
     targets:
-      - name: clean_list
-        filter: '!ALL_CHAN! AND !DROP_SHOPPING!'
+      - name: edge_list
+        filter: '!ALL_CHAN! AND !DROP_SHOPPING! AND !DROP_ADULT!'
         output:
           - type: m3u
-            filename: playlist.m3u
+            filename: edge_list.m3u
+          # Tuliprox's `xtream` output is a binary B+Tree only its own server can read, so it
+          # is NOT what the edge ships. We still emit it: it produces `cat_live.json`, which
+          # the build step uses as the authoritative category id<->name map.
+          - type: xtream

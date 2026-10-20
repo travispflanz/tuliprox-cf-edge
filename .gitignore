@@ -1,8 +1,15 @@
 .env
 .env.*
 !.env.example
+.dev.vars
 dist/
+work/
+data/
+resources/
+.wrangler/
 node_modules/
+epg.xml
 tuliprox
 tuliprox.tar.gz
+tuliprox.sha256
 *.log

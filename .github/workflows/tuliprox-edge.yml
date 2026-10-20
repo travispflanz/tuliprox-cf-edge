@@ -1,9 +1,12 @@
-name: Build & Deploy Tuliprox Playlist to Cloudflare Edge
+name: Build & Deploy Tuliprox Xtream Edge
 
 on:
   schedule:
+    # Upstream trials here last ~36h, so refresh well inside that window.
     - cron: "0 */6 * * *"
   workflow_dispatch:
+  repository_dispatch:
+    types: [credentials-rotated]
   push:
     branches: [main]
 
@@ -11,43 +14,137 @@ concurrency:
   group: tuliprox-edge-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  TULIPROX_VERSION: v3.3.0
+  PAGES_PROJECT: tuliprox-edge-gateway
+  EDGE_ORIGIN: ${{ vars.EDGE_ORIGIN || 'https://tuliprox-edge-gateway.pages.dev' }}
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Download Tuliprox v3.3.0 (x86_64 musl) and verify checksum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download Tuliprox and verify checksum
         run: |
           set -euo pipefail
-          BASE="https://github.com/euzu/tuliprox/releases/download/v3.3.0"
-          curl -fsSL -o tuliprox "$BASE/tuliprox-v3.3.0-x86_64-unknown-linux-musl"
-          curl -fsSL -o tuliprox.sha256 "$BASE/tuliprox-v3.3.0-x86_64-unknown-linux-musl.sha256"
+          BASE="https://github.com/euzu/tuliprox/releases/download/${TULIPROX_VERSION}"
+          curl -fsSL -o tuliprox "$BASE/tuliprox-${TULIPROX_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o tuliprox.sha256 "$BASE/tuliprox-${TULIPROX_VERSION}-x86_64-unknown-linux-musl.sha256"
           echo "$(cut -d' ' -f1 tuliprox.sha256)  tuliprox" | sha256sum -c -
           chmod +x tuliprox
           ./tuliprox --version
 
-      - name: Run Tuliprox in one-shot CLI mode
+      # Fetches, filters and normalises the playlist. `-H` pins the working dir to the repo,
+      # otherwise Tuliprox derives its home from the binary's own location.
+      - name: Run Tuliprox one-shot (Xtream in -> m3u + category map)
         env:
           PROVIDER_URL: ${{ secrets.PROVIDER_URL }}
           PROVIDER_USER: ${{ secrets.PROVIDER_USER }}
           PROVIDER_PASS: ${{ secrets.PROVIDER_PASS }}
         run: |
           set -euo pipefail
-          ./tuliprox -c config/config.yml -i config/source.yml -l info
-          mkdir -p dist
-          cp work/playlist.m3u dist/playlist.m3u
-          test -s dist/playlist.m3u
-          echo "channels: $(grep -c '^#EXTINF' dist/playlist.m3u)"
-          head -n 3 dist/playlist.m3u
-          ls -lh dist/
+          ./tuliprox -H "$PWD" -c config/config.yml -i config/source.yml -l info
+          test -s work/edge_list.m3u
+          echo "channels: $(grep -c '^#EXTINF' work/edge_list.m3u)"
+          test -f work/edge_list/xtream/cat_live.json
+
+      - name: Record provider account health
+        env:
+          OUT_DIR: dist
+          UPSTREAM_URL: ${{ secrets.PROVIDER_URL }}
+          UPSTREAM_USER: ${{ secrets.PROVIDER_USER }}
+          UPSTREAM_PASS: ${{ secrets.PROVIDER_PASS }}
+        run: node build/probe_upstream.mjs
+
+      # Non-fatal: a missing guide must not stop the channels from shipping.
+      - name: Fetch EPG
+        continue-on-error: true
+        env:
+          PROVIDER_URL: ${{ secrets.PROVIDER_URL }}
+          PROVIDER_USER: ${{ secrets.PROVIDER_USER }}
+          PROVIDER_PASS: ${{ secrets.PROVIDER_PASS }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --max-time 180 -A 'Mozilla/5.0' \
+            "$PROVIDER_URL/xmltv.php?username=$(printf %s "$PROVIDER_USER" | jq -sRr @uri)&password=$(printf %s "$PROVIDER_PASS" | jq -sRr @uri)" \
+            -o epg.xml
+          ls -lh epg.xml
+
+      - name: Build edge Xtream indexes
+        env:
+          WORK_DIR: work
+          OUT_DIR: dist
+          M3U_NAME: edge_list.m3u
+          TARGET_DIR: edge_list
+          EDGE_ORIGIN: ${{ env.EDGE_ORIGIN }}
+          CLIENT_USER: ${{ secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
+          EPG_SRC: epg.xml
+        run: node build/make_xtream.mjs
+
+      - name: Assert the build leaks no provider credentials
+        run: |
+          set -euo pipefail
+          # The provider host must not appear anywhere in the published payload.
+          HOST="$(printf %s '${{ secrets.PROVIDER_URL }}' | sed -E 's#^https?://##; s#/.*##')"
+          if [ -n "$HOST" ] && grep -rIl -- "$HOST" dist >/dev/null 2>&1; then
+            echo "::error::provider host $HOST leaked into dist/"
+            grep -rIl -- "$HOST" dist
+            exit 1
+          fi
+          echo "OK: no provider host in dist/"
+          du -sh dist; find dist -type f | wc -l
+
+      - name: Ensure Pages project exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 pages project create "$PAGES_PROJECT" --production-branch=main 2>&1 \
+            | grep -v "already exists" || true
+
+      # GitHub secrets are the single source of truth for the edge's env.
+      - name: Sync edge environment from repository secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CU: ${{ secrets.CLIENT_USER }}
+          CP: ${{ secrets.CLIENT_PASS }}
+          UU: ${{ secrets.PROVIDER_USER }}
+          UP: ${{ secrets.PROVIDER_PASS }}
+          UURL: ${{ secrets.PROVIDER_URL }}
+        run: |
+          set -euo pipefail
+          put() { printf '%s' "$2" | npx --yes wrangler@4 pages secret put "$1" --project-name "$PAGES_PROJECT" >/dev/null; }
+          put CLIENT_USER "$CU"
+          put CLIENT_PASS "$CP"
+          put UPSTREAM_USER "$UU"
+          put UPSTREAM_PASS "$UP"
+          put UPSTREAM_URL "$UURL"
+          echo "edge env synced"
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=tuliprox-edge-gateway --branch=main
+          command: pages deploy dist --project-name=${{ env.PAGES_PROJECT }} --branch=main
+
+      - name: Smoke-test the live edge
+        env:
+          BASE: ${{ env.EDGE_ORIGIN }}
+          CLIENT_USER: ${{ secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
+        run: |
+          set -euo pipefail
+          # Same script that gates local changes, so CI and local can never drift apart.
+          sleep 10   # let the deployment propagate
+          BASE="$BASE" python3 build/verify_edge.py

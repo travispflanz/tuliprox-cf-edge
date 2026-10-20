@@ -9,6 +9,8 @@ resources/
 .wrangler/
 node_modules/
 epg.xml
+# generated: carries client credentials, so it must not live in git history
+connection-card.html
 tuliprox
 tuliprox.tar.gz
 tuliprox.sha256

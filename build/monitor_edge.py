@@ -221,7 +221,7 @@ if notes:
     lines += ["### Detail"] + [f"- {n}" for n in notes] + [""]
 lines += ["---",
           "Health is checked in the cloud by `.github/workflows/edge-monitor.yml`.",
-          "Operations runbook: [`docs/OPERATIONS.md`](../blob/main/docs/OPERATIONS.md)"]
+          "Operations runbook: [README — Part 1](../blob/main/README.md#part-1--operating-it)"]
 body = "\n".join(lines)
 
 summary = "; ".join(problems or warnings or notes[:1]) or "healthy"

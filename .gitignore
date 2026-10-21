@@ -1,6 +1,7 @@
+# Secrets. There is no committed .env template: local development uses .dev.vars, and the
+# single source of truth for CI is GitHub Secrets.
 .env
 .env.*
-!.env.example
 .dev.vars
 # the credential the build persists between runs — carries provider credentials, never commit
 .cred/
@@ -11,8 +12,6 @@ resources/
 .wrangler/
 node_modules/
 epg.xml
-# generated: carries client credentials, so it must not live in git history
-connection-card.html
 tuliprox
 tuliprox.tar.gz
 tuliprox.sha256

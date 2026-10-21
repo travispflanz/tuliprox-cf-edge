@@ -1,7 +1,7 @@
 # tuliprox-cf-edge — canonical commands.
 #
 # The suite lives in build/run_tests.py so CI and a local run execute the SAME checks and can
-# never drift. See docs/OPERATIONS.md for day-to-day (browser-only) operations.
+# never drift. See README.md for operations (Part 1) and development (Part 2).
 
 PY ?= python3
 

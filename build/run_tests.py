@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -124,6 +125,58 @@ def offline() -> None:
                     "print('ok')", str(wf)])
         record(f"{wf.name} parses", PASS if proc.returncode == 0 else FAIL,
                (proc.stderr.strip() or proc.stdout.strip())[:300])
+
+    print("\n=== offline: documentation integrity ===")
+    # Deleting a file and leaving a reference to it behind is invisible until a human follows the
+    # link. Both of these fired for real when docs/ was folded into the README.
+    tracked = run(["git", "ls-files"]).stdout.split()
+    tracked_set = set(tracked)
+    # Only paths under directories that are actually committed are checkable: build artifacts
+    # (work/, dist/) and gitignored state (.cred/) are referenced legitimately but never tracked.
+    # A real file reference always carries an extension. Requiring one keeps prose like
+    # "tracked docs/config" from being mistaken for a path.
+    ref_pat = re.compile(
+        r"(?:(?:build|config|functions)/[A-Za-z0-9_./-]+"
+        r"|\.github/workflows/[A-Za-z0-9_.-]+"
+        r"|[A-Z][A-Za-z_]*)"
+        r"\.(?:py|mjs|js|yml|yaml|json|md)\b"
+    )
+    dangling: list[str] = []
+    for rel in tracked:
+        if pathlib.Path(rel).suffix not in {".md", ".py", ".mjs", ".js", ".yml", ".yaml", ""}:
+            continue
+        try:
+            text = (REPO / rel).read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for match in set(ref_pat.findall(text)):
+            # Composite/elided references in prose are not real paths.
+            if any(ch in match for ch in "[]|…*") or match.endswith("/"):
+                continue
+            if match not in tracked_set and not (REPO / match).exists():
+                dangling.append(f"{rel} → {match}")
+    record("no reference to a non-existent file", FAIL if dangling else PASS,
+           "; ".join(sorted(set(dangling))[:6]))
+
+    # A credential pasted into documentation is committed to git history, where it cannot be
+    # unsent. Placeholders are fine; a real-looking value is not.
+    placeholder = re.compile(r"^(?:<[^>]*>|\.{3}|…|\*{3,}|\$\{?\w|YOUR_|your[-_]|edgeUser|providerUser|example)", re.I)
+    leaks: list[str] = []
+    cred_pat = re.compile(r"(?:password|passwd|pass)\s*[:=]\s*\"?([^\s\"&<>|]+)", re.I)
+    for rel in tracked:
+        if pathlib.Path(rel).suffix not in {".md", ".yml", ".yaml", ""}:
+            continue
+        try:
+            lines = (REPO / rel).read_text(encoding="utf-8").splitlines()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for num, line in enumerate(lines, 1):
+            for value in cred_pat.findall(line):
+                if placeholder.match(value) or len(value) < 10:
+                    continue
+                leaks.append(f"{rel}:{num}")
+    record("no plaintext credential in tracked docs/config", FAIL if leaks else PASS,
+           "; ".join(sorted(set(leaks))[:6]))
 
     print("\n=== offline: secret hygiene ===")
     # .cred/ carries live provider credentials between builds. If it were ever committable, a

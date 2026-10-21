@@ -73,11 +73,12 @@ are piped through with `new Response(res.body, …)`, ~0 CPU for a 2 KB or 5 MB 
 Everything runs in the cloud: GitHub Actions builds, Cloudflare Pages serves, and a scheduled
 GitHub workflow supervises. No local machine, CLI, or Hermes profile is required for any of it.
 1. Rebuild now: Actions -> "Build & Deploy Tuliprox Xtream Edge" -> Run workflow.
-2. Provider credential: **fully automatic, 24h cadence**. The build renews once a day — ~12h of
-   overlap on a ~36h trial, so there is never a window serving a dead account — and reuses the
-   credential in between (~1 signup/day instead of ~4). Its age is carried between builds in
-   `.cred/provider.json` via the Actions cache. `PROVIDER_*` are only the bootstrap and the
-   fallback. No email/OTP is ever read, and client credentials and every playlist URL are unaffected.
+2. Provider credential: **fully automatic, 24h cadence**. The build renews once a day — 6–12h of
+   overlap on a ~36h trial (typically ~9h; builds run every 6h), so there is never a window serving
+   a dead account — and reuses the credential in between (~1 signup/day instead of ~4). Its age is
+   carried between builds in `.cred/provider.json` via the Actions cache. `PROVIDER_*` are only the
+   bootstrap and the fallback. No email/OTP is ever read, and client credentials and every playlist
+   URL are unaffected.
 3. Change filtering: edit `config/source.yml` or `config/template.yml` in the GitHub web editor and
    commit to `main` — the push triggers a rebuild.
 4. Health: the Edge Monitor workflow opens, updates and auto-closes a labelled issue. It reuses the

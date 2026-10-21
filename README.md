@@ -25,8 +25,9 @@ No part of this project depends on a local machine. It is built, served and supe
 GitHub and Cloudflare, and it is operated from a browser — see the runbook.
 
 The provider account renews itself on a **24-hour cadence**: a fresh trial is acquired straight from
-the provider's API — **no email, no OTP, no browser, no manual rotation** — about 12 hours before the
-~36-hour trial it replaces dies, so the playlist never has a window with a dead account. That is ~1
+the provider's API — **no email, no OTP, no browser, no manual rotation** — 6–12 hours before the
+~36-hour trial it replaces dies (typically ~9h; builds run every 6h, so the cadence is evaluated in
+6-hour steps), so the playlist never has a window with a dead account. That is ~1
 signup/day rather than the ~4/day a signup-per-build would produce; the low rate is the point, since
 request churn is what would risk the provider treating this as automated abuse. The credential and
 its acquisition time are persisted across builds in the workflow's Actions cache.

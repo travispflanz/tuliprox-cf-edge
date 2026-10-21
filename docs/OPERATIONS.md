@@ -121,10 +121,15 @@ waiting for the next 6-hour cycle.
 
 **There is nothing to do here any more.** Trials last ~36 hours, which used to be the one recurring
 manual job. The build now maintains its own credential on a **24-hour cadence** — it renews once a
-day, so on a 36-hour trial the replacement always arrives with about **12 hours of overlap** and
-there is never a window where the playlist serves a dead account. It also keeps the rate at roughly
-**1 signup a day**, against the ~4 a day that signing up on every build would produce; that churn is
-what would risk the provider reading this as automated abuse and withdrawing the free trial.
+day, so on a 36-hour trial the replacement arrives with **6–12 hours of overlap** (typically ~9h:
+builds run every 6h, so the cadence is evaluated in 6-hour steps) and there is never a window where
+the playlist serves a dead account. It also keeps the rate at roughly **1 signup a day**, against the
+~4 a day that signing up on every build would produce; that churn is what would risk the provider
+reading this as automated abuse and withdrawing the free trial.
+
+If a renewal should ever fail, the next build (6h later) retries it while the current credential
+still has hours left. Want more runway than that? Lower `RENEW_EVERY_HOURS` (e.g. `18`) — it buys
+overlap at the cost of more signups.
 
 Two rules decide it, both in `build/acquire_trial.py`:
 

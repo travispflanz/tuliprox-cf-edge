@@ -16,6 +16,12 @@ GitHub Actions (cron 6h | push | dispatch | credentials-rotated)
   └─ leak gate                   fail if the provider host appears anywhere in dist/
   └─ wrangler pages deploy dist + ./functions
 
+GitHub Actions — Edge Monitor (cron 6h, offset +30m)  [all-cloud supervision]
+  └─ build/monitor_edge.py      reuses verify_edge.py (27 assertions), plus provider-account
+                                expiry and deploy-freshness checks -> opens/updates/auto-closes a
+                                labelled issue, and fails the run on real breakage so GitHub's own
+                                notifications fire. No local machine involved.
+
 Cloudflare Pages Functions
   /player_api.php   auth -> pipe prebuilt JSON (categories, streams, per-category splits)
   /panel_api.php    legacy panel variant
@@ -61,12 +67,17 @@ are piped through with `new Response(res.body, …)`, ~0 CPU for a 2 KB or 5 MB 
 | 9 | Hugging Face Free | API Token | Free Monthly Credits | edge-auditor | free-router-coding |
 | 10 | Ollama Local/Cloud | Custom Endpoint | Local / $0 Cloud | edge-auditor | gemma4:31b |
 
-## Day-2 operations
-1. Edit `config/source.yml`, `config/template.yml`, or a `build/` script.
-2. Push to `main`, or `gh workflow run tuliprox-edge.yml` for an immediate rebuild.
-3. CI downloads + checksum-verifies Tuliprox, builds the index, gates credential leaks, syncs the
-   Pages env from repo secrets, deploys, then smoke-tests the live edge.
-4. Clients connect by Xtream login (server URL + `CLIENT_USER`/`CLIENT_PASS`) or by M3U URL.
+## Day-2 operations (browser-only — full runbook in `docs/OPERATIONS.md`)
+Everything runs in the cloud: GitHub Actions builds, Cloudflare Pages serves, and a scheduled
+GitHub workflow supervises. No local machine, CLI, or Hermes profile is required for any of it.
+1. Rebuild now: Actions -> "Build & Deploy Tuliprox Xtream Edge" -> Run workflow.
+2. Rotate a lapsed provider trial: update the `PROVIDER_*` repository secrets, then re-run. Client
+   credentials and every playlist URL stay the same.
+3. Change filtering: edit `config/source.yml` or `config/template.yml` in the GitHub web editor and
+   commit to `main` — the push triggers a rebuild.
+4. Health: the Edge Monitor workflow opens, updates and auto-closes a labelled issue. It reuses the
+   same `verify_edge.py` that gates deploys, so monitoring and deployment can never drift apart.
+5. Clients connect by Xtream login (server URL + `CLIENT_USER`/`CLIENT_PASS`) or by M3U URL.
 
 ## Build notes
 - Tuliprox v3.3.0 ships as a **bare musl binary** (~33.9 MB), not a tarball; the workflow also

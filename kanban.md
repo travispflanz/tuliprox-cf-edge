@@ -10,6 +10,10 @@
 - [x] Phase 5: **Native Xtream Codes API** served from static assets + stream delivery
 - [x] Phase 6: Production hardening — rotated weak `admin`/`tuliprox2026` client creds,
       credential-leak gate, secret validation, EPG shipped and normalised, 27-assertion verifier
+- [x] Phase 7: **All-cloud operations** — scheduled cloud watchdog (`edge-monitor.yml` +
+      `build/monitor_edge.py`) superseding the local Hermes cron watchdog; alerting via labelled
+      GitHub issues that auto-close on recovery; browser-only runbook `docs/OPERATIONS.md`;
+      removed every local-machine path from tracked code. Nothing here needs a local machine.
 
 ## Verified results (production edge)
 - CI run `39500239940`: **success**, 27/27 checks passed on the live edge
@@ -28,5 +32,5 @@
 - **Upstream trials are short-lived (~36h)**; the pipeline refreshes every 6h and the login response
   reports `Expired` when the provider lapses.
 - Live-only build (VOD/series skipped) to stay inside the Pages 25 MiB per-file ceiling.
-- The watchdog script lives outside the repo (`~/.hermes/scripts/` + profile copy), so it is not
-  version-controlled alongside the pipeline.
+- **Monitoring used to live outside the repo.** Resolved (Phase 7): it is now a scheduled GitHub
+  workflow in the repository, so no part of this project depends on a local machine.

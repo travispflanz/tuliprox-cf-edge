@@ -20,18 +20,18 @@ BASE = os.environ.get("BASE", "https://tuliprox-edge-gateway.pages.dev").rstrip(
 
 
 def load_creds() -> tuple[str, str]:
-    """Prefer the environment, then the gitignored .dev.vars / dedicated creds file."""
+    """Prefer the environment, then the gitignored .dev.vars (no machine-specific paths)."""
     cu, cp = os.environ.get("CLIENT_USER"), os.environ.get("CLIENT_PASS")
     if cu and cp:
         return cu, cp
-    for p in (ROOT / ".dev.vars", Path.home() / ".hermes" / "tuliprox-cf-edge.env"):
-        if p.exists():
-            t = p.read_text()
-            cu = cu or (re.search(r'CLIENT_USER="?([^"\n]+)"?', t) or [None, None])[1]
-            cp = cp or (re.search(r'CLIENT_PASS="?([^"\n]+)"?', t) or [None, None])[1]
-        if cu and cp:
-            return cu, cp
-    raise SystemExit("no CLIENT_USER/CLIENT_PASS found (env, .dev.vars, or ~/.hermes/tuliprox-cf-edge.env)")
+    p = ROOT / ".dev.vars"
+    if p.exists():
+        t = p.read_text()
+        cu = cu or (re.search(r'CLIENT_USER="?([^"\n]+)"?', t) or [None, None])[1]
+        cp = cp or (re.search(r'CLIENT_PASS="?([^"\n]+)"?', t) or [None, None])[1]
+    if cu and cp:
+        return cu, cp
+    raise SystemExit("no CLIENT_USER/CLIENT_PASS found (set the env vars, or fill .dev.vars)")
 
 
 def get_json(url: str):

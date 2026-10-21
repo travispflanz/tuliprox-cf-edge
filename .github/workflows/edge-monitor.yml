@@ -1,0 +1,115 @@
+name: Edge Monitor (cloud watchdog)
+
+# Supervises the deployed edge entirely inside GitHub — no operator machine is involved.
+# Opens (and auto-closes) a labelled issue so an alert is durable and visible, and fails the run
+# on real breakage so GitHub's own notification emails fire.
+on:
+  schedule:
+    # Offset 30 min from the build (0 */6) so we always judge a FINISHED rebuild, never one mid-flight.
+    - cron: "30 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      simulate:
+        description: "Force a verdict to test the alerting path (alert = open issue + red run)"
+        type: choice
+        options: [none, alert, healthy]
+        default: none
+
+permissions:
+  contents: read
+  issues: write
+
+# Never cancel a health check in progress; the monitor is fast and order matters for alert state.
+concurrency:
+  group: edge-monitor
+  cancel-in-progress: false
+
+env:
+  EDGE_ORIGIN: ${{ vars.EDGE_ORIGIN || 'https://tuliprox-edge-gateway.pages.dev' }}
+  ALERT_LABEL: edge-alert
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      # continue-on-error so the verdict can be acted on (issue open/close) before the run is
+      # marked failed. The report is emitted to $GITHUB_OUTPUT either way.
+      - name: Probe the live edge
+        id: mon
+        continue-on-error: true
+        env:
+          BASE: ${{ env.EDGE_ORIGIN }}
+          CLIENT_USER: ${{ secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
+          SIMULATE: ${{ inputs.simulate || 'none' }}
+        run: python3 build/monitor_edge.py
+
+      - name: Publish the report to the run summary
+        if: always()
+        env:
+          BODY: ${{ steps.mon.outputs.body }}
+          STATUS: ${{ steps.mon.outputs.status }}
+        run: |
+          {
+            echo "## Edge monitor — ${STATUS:-no verdict}"
+            echo
+            printf '%s\n' "${BODY:-(the probe produced no output)}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Ensure the alert label exists
+        if: steps.mon.outputs.status == 'warn' || steps.mon.outputs.status == 'alert'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "$ALERT_LABEL" --color B60205 \
+            --description "Automated edge health alert" --force
+
+      - name: Raise or update the alert issue
+        if: steps.mon.outputs.status == 'warn' || steps.mon.outputs.status == 'alert'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ steps.mon.outputs.title }}
+          BODY: ${{ steps.mon.outputs.body }}
+          STATUS: ${{ steps.mon.outputs.status }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$BODY" > /tmp/body.md
+          num="$(gh issue list --label "$ALERT_LABEL" --state open --json number -q '.[0].number')"
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --title "$TITLE" --body-file /tmp/body.md
+            gh issue comment "$num" --body "still \`${STATUS}\` — re-checked $(date -u +%Y-%m-%dT%H:%MZ)"
+            echo "updated issue #$num"
+          else
+            gh issue create --title "$TITLE" --body-file /tmp/body.md --label "$ALERT_LABEL"
+          fi
+
+      - name: Close the alert issue when healthy again
+        if: steps.mon.outputs.status == 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          nums="$(gh issue list --label "$ALERT_LABEL" --state open --json number -q '.[].number')"
+          if [ -z "$nums" ]; then echo "no open alerts"; exit 0; fi
+          for n in $nums; do
+            gh issue close "$n" \
+              --comment "Recovered — the edge is healthy again as of $(date -u +%Y-%m-%dT%H:%MZ)."
+          done
+
+      # A crashed probe must be loud, not silently "not ok".
+      - name: Fail if the probe produced no verdict
+        if: always() && steps.mon.outputs.status == ''
+        run: |
+          echo "::error::the monitor produced no verdict — see the 'Probe the live edge' step above"
+          exit 1
+
+      - name: Fail the run on a real breakage
+        if: steps.mon.outputs.status == 'alert'
+        env:
+          SUMMARY: ${{ steps.mon.outputs.summary }}
+        run: |
+          echo "::error::${SUMMARY:-edge alert — see the alert issue}"
+          exit 1

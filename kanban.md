@@ -14,6 +14,12 @@
       `build/monitor_edge.py`) superseding the local Hermes cron watchdog; alerting via labelled
       GitHub issues that auto-close on recovery; browser-only runbook `docs/OPERATIONS.md`;
       removed every local-machine path from tracked code. Nothing here needs a local machine.
+- [x] Phase 8: **Self-renewing provider credential** — `build/acquire_trial.py` obtains a trial
+      straight from the provider's own API (no email/OTP/captcha/browser). It REUSES a healthy
+      credential and signs up only when that lapses or drops under `MIN_HOURS_LEFT`, deliberately
+      avoiding ~4 signups/day of churn that could read as automated abuse. Non-fatal: any failure
+      falls back to the seeded `PROVIDER_*` secret. Also fixed a silent hole in the leak gate (it
+      scanned for the stored secret's host even when a different panel was actually used).
 
 ## Verified results (production edge)
 - CI run `39500239940`: **success**, 27/27 checks passed on the live edge

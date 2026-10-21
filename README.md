@@ -19,9 +19,15 @@ provider's own Xtream API — no server, no VPS, no cold starts.
 | Fetch provider → filter → build indexes | GitHub Actions | every 6 hours |
 | Serve Xtream / M3U / EPG | Cloudflare Pages | always on |
 | Health monitoring + alerting | GitHub Actions (`Edge Monitor`) | every 6 hours |
+| **Provider credential renewal** | GitHub Actions (inside the build) | only when the trial lapses |
 
 No part of this project depends on a local machine. It is built, served and supervised entirely by
 GitHub and Cloudflare, and it is operated from a browser — see the runbook.
+
+The provider account renews itself: the build reuses the credential in force while it is healthy and,
+once it's dead or nearly expired, acquires a fresh trial directly from the provider's API — **no
+email, no OTP, no browser, no manual rotation**. It reuses rather than re-signing-up on every run on
+purpose: ~4 trials/day of signup churn would risk the provider treating it as automated abuse.
 
 ## How it works
 
@@ -38,7 +44,8 @@ written into any published file**.
 
 ```
 config/                 Tuliprox inputs + filter templates
-build/                  make_xtream.mjs (index builder), monitor_edge.py, verify_edge.py
+build/                  make_xtream.mjs (index builder), acquire_trial.py (credential renewal),
+                        monitor_edge.py, verify_edge.py
 functions/              Cloudflare Pages Functions implementing the Xtream API
 .github/workflows/      tuliprox-edge.yml (build + deploy), edge-monitor.yml (cloud watchdog)
 docs/OPERATIONS.md      the browser-only operations runbook

@@ -8,6 +8,8 @@ built by GitHub Actions running the official Tuliprox v3.3.0 CLI binary in one-s
 
 ```
 GitHub Actions (cron 6h | push | dispatch | credentials-rotated)
+  └─ build/acquire_trial.py     ensure a provider credential: REUSE while healthy, else acquire a
+                                fresh trial from the provider's API (no email/OTP/browser/rotation)
   └─ tuliprox v3.3.0 one-shot   xtream in (provider) -> m3u + cat_live.json
   └─ build/probe_upstream.mjs   record the account's real health (auth/status/exp_date)
   └─ curl xmltv.php             provider's own guide
@@ -71,8 +73,9 @@ are piped through with `new Response(res.body, …)`, ~0 CPU for a 2 KB or 5 MB 
 Everything runs in the cloud: GitHub Actions builds, Cloudflare Pages serves, and a scheduled
 GitHub workflow supervises. No local machine, CLI, or Hermes profile is required for any of it.
 1. Rebuild now: Actions -> "Build & Deploy Tuliprox Xtream Edge" -> Run workflow.
-2. Rotate a lapsed provider trial: update the `PROVIDER_*` repository secrets, then re-run. Client
-   credentials and every playlist URL stay the same.
+2. Provider credential: **fully automatic**. The build reuses a healthy trial and acquires a fresh
+   one from the provider's API only when it lapses. No email/OTP is ever read. `PROVIDER_*` stay as
+   the seed and the fallback. Client credentials and every playlist URL are unaffected.
 3. Change filtering: edit `config/source.yml` or `config/template.yml` in the GitHub web editor and
    commit to `main` — the push triggers a rebuild.
 4. Health: the Edge Monitor workflow opens, updates and auto-closes a labelled issue. It reuses the

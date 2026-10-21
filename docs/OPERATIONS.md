@@ -117,22 +117,36 @@ waiting for the next 6-hour cycle.
 
 ---
 
-### B. Rotate the provider account ⚠️ *the one you'll need soonest*
+### B. The provider account — now automatic ✅
 
-Provider trials last roughly **36 hours**. When one lapses the catalogue keeps serving normally
-while **every stream fails** — which is the most confusing failure this system has. The monitor
-warns you before it happens and alerts you if it has.
+**There is nothing to do here any more.** Trials last ~36–48 hours, which used to be the one
+recurring manual job. The build now maintains its own credential:
 
-1. Get the new credentials from your provider.
-2. Open https://github.com/travispflanz/tuliprox-cf-edge/settings/secrets/actions
-3. For each of `PROVIDER_URL`, `PROVIDER_USER`, `PROVIDER_PASS`:
-   click **Update** (or **New repository secret** if absent), paste the value, **Save**.
-4. Re-run the build: **Actions** → **Build & Deploy Tuliprox Xtream Edge** → **Run workflow**.
-5. Confirm: reload the §3 Option 3 URL and check for `"auth":1`.
+- On every run it checks the credential currently in force.
+- **Healthy → it is reused, and no signup is made.** This is deliberate: signing up on every
+  6-hour build would create ~4 trials a day, and that churn risks the provider treating this as
+  automated abuse and withdrawing the free trial entirely.
+- **Dead, or under `MIN_HOURS_LEFT` (default 12) hours left → a fresh trial is acquired** straight
+  from the provider's API and adopted for that build.
 
-**Your players are unaffected.** The client credentials and every playlist URL stay the same, and
-the build pushes the new provider credentials into the live edge automatically. **GitHub Secrets
-are the single source of truth** — you never edit the edge directly.
+Acquisition needs **no email, no OTP and no browser** — the provider returns the credentials in its
+own poll response. An email *address* is still required as an input, because the provider's dedup
+is permanent per address, so a fresh `+alias` is minted per request. Nothing ever reads that inbox.
+
+A lapsed trial therefore heals itself on the next build.
+
+**To force a brand-new trial** (e.g. to exercise the acquisition path):
+**Actions** → **Build & Deploy Tuliprox Xtream Edge** → **Run workflow** → tick **force_trial** →
+**Run workflow**.
+
+**Pinning a specific account by hand still works.** Set `PROVIDER_URL` / `PROVIDER_USER` /
+`PROVIDER_PASS` at https://github.com/travispflanz/tuliprox-cf-edge/settings/secrets/actions. They
+act as the *seed* and the *fallback*: a healthy seeded credential is reused, and any acquisition
+failure falls back to them — so automatic acquisition can never turn a working build into a broken
+one.
+
+**Your players are unaffected either way** — the client credentials and every playlist URL stay
+identical.
 
 ---
 
@@ -140,22 +154,30 @@ are the single source of truth** — you never edit the edge directly.
 
 Edit the file in the browser, commit, and the build runs automatically.
 
-**Drop or keep categories** — `config/source.yml`, the `filter:` line:
+**Which categories are kept** — `config/source.yml`, the `filter:` line. It currently drops
+non-English groups:
 ```yaml
-filter: '!ALL_CHAN! AND !DROP_SHOPPING! AND !DROP_ADULT!'
+filter: '!ALL_CHAN! AND !DROP_NONENG!'
 ```
 
-**Change what those templates mean** — `config/template.yml`:
+**What those templates mean** — `config/template.yml`:
 ```yaml
 templates:
   - name: ALL_CHAN
     value: 'Group ~ ".*"'
-  - name: DROP_SHOPPING
-    value: 'NOT (Group ~ "(?i).*(shopping|teleshopping|home shopping).*")'
-  - name: DROP_ADULT
-    value: 'NOT (Group ~ "(?i).*(adult|xxx|18\\+).*")'
+  - name: DROP_NONENG
+    value: 'Not (Group ~ "(?i)^(DK|CH|ARG|AR|PL|AL|TR|PT|ES|BR|MX|...):")'
 ```
-Patterns are regex matched against the category name; `(?i)` makes them case-insensitive.
+The playlist is currently **filtered to English-language groups**: `DROP_NONENG` drops any group
+whose name begins with one of those region prefixes. To drop another region, add its prefix to the
+list; to bring one back, remove it. (As of the last build this filter yields **10,307 channels**.)
+
+Patterns are regex matched against the category name — `(?i)` is case-insensitive, `^…:` anchors to
+the start of the name.
+
+> An earlier iteration used `DROP_SHOPPING` / `DROP_ADULT` templates. They are no longer referenced
+> by `filter:`. To reinstate them, re-add the template **and** reference it in `filter:` — a
+> template that nothing references has no effect.
 
 **Include movies and series** — `config/source.yml`, set both to `false`:
 ```yaml
@@ -216,16 +238,18 @@ https://tuliprox-edge-gateway.pages.dev/xmltv.php?username=edgeikknrzkm1z&passwo
 Each run of **Build & Deploy Tuliprox Xtream Edge**:
 
 1. Downloads the official Tuliprox binary and verifies its SHA-256 checksum
-2. Verifies the required secrets are populated (an empty secret is invisible at runtime, so this
+2. Verifies the client secrets are populated (an empty secret is invisible at runtime, so this
    turns it into an explicit error)
-3. Runs Tuliprox — fetch, filter, normalise → `edge_list.m3u`
-4. Probes the provider account so the edge can report `Expired` instead of failing silently
-5. Fetches the EPG (non-fatal if unavailable)
-6. Reshapes Tuliprox's output into the static indexes the edge serves
-7. **Leak gate** — fails the build if the provider's hostname appears anywhere in the publish
-8. Syncs the edge's environment from repository secrets
-9. Deploys to Cloudflare Pages
-10. Smoke-tests the live edge with the same 27 assertions the monitor uses
+3. **Ensures a usable provider credential** — reuses the current one while it is healthy, otherwise
+   acquires a fresh trial from the provider's API (§4B)
+4. Runs Tuliprox — fetch, filter, normalise → `edge_list.m3u`
+5. Probes the provider account so the edge can report `Expired` instead of failing silently
+6. Fetches the EPG (non-fatal if unavailable)
+7. Reshapes Tuliprox's output into the static indexes the edge serves
+8. **Leak gate** — fails the build if the provider host actually used appears anywhere in the publish
+9. Syncs the edge's environment from the credential that built this deploy
+10. Deploys to Cloudflare Pages
+11. Smoke-tests the live edge with the same 27 assertions the monitor uses
 
 **Two design decisions worth knowing:**
 
@@ -247,8 +271,8 @@ exactly how the provider intends clients to work. This is a deliberate workaroun
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Catalogue loads but **every stream fails** | Provider trial expired | **§4B** |
-| Player shows **Expired** / `auth: 0` | Same | **§4B** |
+| Catalogue loads but **every stream fails** | Provider trial expired | Self-healing: the next build acquires a new trial (§4B). To do it now — **§4A** and tick **force_trial** |
+| Player shows **Expired** / `auth: 0` | Provider trial expired | Same — auto-renewed on the next build |
 | An **edge-alert** issue is open | Monitor found a problem | Read the issue — it states the cause |
 | **401 Unauthorized** | Wrong client credentials | Use the §5 credentials (or see §4D) |
 | Playlist loads but **no channels** | Build failed or deployed empty | Check the **Actions** tab for a red run |
@@ -278,9 +302,10 @@ build instead).
 ## 9. One-paragraph summary
 
 GitHub Actions rebuilds this edge from your provider every 6 hours and deploys it to Cloudflare
-Pages, which serves a real Xtream Codes API. A second scheduled workflow watches the live edge and
-the provider account, opening an issue when something needs you and closing it when things recover —
-all without any local machine involved. To refresh content, re-run the build; to survive a trial
-expiry (roughly every 36 hours), update the three `PROVIDER_*` secrets and re-run; to change filters,
-edit the config file in the browser and commit. Players connect with the credentials in §5 and never
-need changing unless you deliberately rotate them.
+Pages, which serves a real Xtream Codes API. The build also maintains its **own** provider
+credential: it reuses a healthy one and, when that lapses, acquires a fresh trial straight from the
+provider's API — no email, no OTP, no browser — so there is no recurring credential rotation left to
+perform. A second scheduled workflow watches the live edge and the provider account, opening an issue
+when something needs you and closing it when things recover; it runs in the cloud too. To refresh
+content, re-run the build; to change filters, edit the config file in the browser and commit. Players
+connect with the credentials in §5 and never need changing unless you deliberately rotate them.

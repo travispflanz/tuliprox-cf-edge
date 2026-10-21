@@ -5,6 +5,11 @@ on:
     # Upstream trials here last ~36h, so refresh well inside that window.
     - cron: "0 */6 * * *"
   workflow_dispatch:
+    inputs:
+      force_trial:
+        description: "Force a brand-new provider trial signup (only for testing the acquisition path)"
+        type: boolean
+        default: false
   repository_dispatch:
     types: [credentials-rotated]
   push:
@@ -43,37 +48,104 @@ jobs:
           chmod +x tuliprox
           ./tuliprox --version
 
-      # Fail fast and legibly: Tuliprox reports missing credentials only as
-      # "username and password are mandatory", which hides that the SECRET is empty.
+      # CLIENT_* are what players log in with, so they must always exist.
+      # PROVIDER_* are now OPTIONAL: the acquisition step below mints a fresh trial straight from
+      # the provider's API, so a missing or expired provider account no longer stops a build.
       - name: Verify required secrets are populated
         env:
+          CLIENT_USER: ${{ secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
           PROVIDER_URL: ${{ secrets.PROVIDER_URL }}
           PROVIDER_USER: ${{ secrets.PROVIDER_USER }}
           PROVIDER_PASS: ${{ secrets.PROVIDER_PASS }}
-          CLIENT_USER: ${{ secrets.CLIENT_USER }}
-          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
         run: |
           set -euo pipefail
           missing=""
-          for v in PROVIDER_URL PROVIDER_USER PROVIDER_PASS CLIENT_USER CLIENT_PASS; do
+          for v in CLIENT_USER CLIENT_PASS; do
             if [ -z "${!v}" ]; then missing="$missing $v"; fi
           done
           if [ -n "$missing" ]; then
-            echo "::error::these repository secrets are empty or unset:$missing"
+            echo "::error::these required repository secrets are empty or unset:$missing"
             echo "Set them with: gh secret set NAME  (an empty secret is indistinguishable from an unset one at runtime)"
             exit 1
           fi
-          echo "all required secrets present"
+          if [ -z "${PROVIDER_USER:-}" ] || [ -z "${PROVIDER_PASS:-}" ]; then
+            echo "::warning::PROVIDER_* are unset — this build will rely entirely on automatic trial acquisition"
+          fi
+          echo "client credentials present"
+
+      # Seed the effective provider credential from the stored secrets. The acquisition step
+      # overwrites these in $GITHUB_ENV when it succeeds, so every later step — including
+      # Tuliprox's own ${env:PROVIDER_*} config expansion — transparently uses whichever is in force.
+      - name: Seed provider credentials from repository secrets
+        env:
+          PU: ${{ secrets.PROVIDER_URL }}
+          PUN: ${{ secrets.PROVIDER_USER }}
+          PP: ${{ secrets.PROVIDER_PASS }}
+        run: |
+          set -euo pipefail
+          # Both aliases are exported: Tuliprox's config expands ${env:PROVIDER_*}, while the
+          # edge/probe scripts read UPSTREAM_*. Naming them once here means no later step has to
+          # re-inject a secret and silently override an acquired trial.
+          {
+            echo "PROVIDER_URL=$PU";  echo "PROVIDER_USER=$PUN";  echo "PROVIDER_PASS=$PP"
+            echo "UPSTREAM_URL=$PU";  echo "UPSTREAM_USER=$PUN";  echo "UPSTREAM_PASS=$PP"
+          } >> "$GITHUB_ENV"
+
+      # No email, OTP, captcha or browser: the provider returns the credentials directly in its
+      # own poll response. REUSES a healthy credential rather than signing up every build — a
+      # signup on every 6h run would be ~4 trials/day, and that churn risks the provider treating
+      # this as automated abuse and withdrawing the free trial. Non-fatal by design: a failure
+      # falls back to the seeded secret, so acquisition can never break a working build.
+      - name: Ensure a usable provider credential (reuse if healthy, else acquire)
+        id: trial
+        continue-on-error: true
+        env:
+          TRIAL_EMAIL_BASE: ${{ vars.TRIAL_EMAIL_BASE || 'taskgobbler' }}
+          MIN_HOURS_LEFT: ${{ vars.MIN_HOURS_LEFT || '12' }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.force_trial }}" = "true" ]; then
+            echo "force_trial=true — acquiring a brand-new trial"
+            python3 build/acquire_trial.py --force
+          else
+            python3 build/acquire_trial.py --if-needed
+          fi
+
+      - name: Adopt the fresh trial (when one was acquired)
+        if: steps.trial.outputs.status == 'ok'
+        env:
+          T_URL: ${{ steps.trial.outputs.url }}
+          T_USER: ${{ steps.trial.outputs.username }}
+          T_PASS: ${{ steps.trial.outputs.password }}
+          T_EXP: ${{ steps.trial.outputs.expires_at }}
+        run: |
+          set -euo pipefail
+          {
+            echo "PROVIDER_URL=$T_URL";  echo "PROVIDER_USER=$T_USER";  echo "PROVIDER_PASS=$T_PASS"
+            echo "UPSTREAM_URL=$T_URL";  echo "UPSTREAM_USER=$T_USER";  echo "UPSTREAM_PASS=$T_PASS"
+          } >> "$GITHUB_ENV"
+          echo "adopted a fresh trial ($T_USER), expires $T_EXP"
+
+      - name: Report which provider credential is in force
+        run: |
+          case "${{ steps.trial.outputs.status }}" in
+            ok)     echo "provider credential: freshly acquired trial (auto-renewed)" ;;
+            reused) echo "provider credential: existing trial, still healthy (reused — no signup made)" ;;
+            *)      echo "::warning::acquisition did not succeed (status=${{ steps.trial.outputs.status }}) — using the stored PROVIDER_* secret" ;;
+          esac
 
       # Fetches, filters and normalises the playlist. `-H` pins the working dir to the repo,
       # otherwise Tuliprox derives its home from the binary's own location.
       - name: Run Tuliprox one-shot (Xtream in -> m3u + category map)
-        env:
-          PROVIDER_URL: ${{ secrets.PROVIDER_URL }}
-          PROVIDER_USER: ${{ secrets.PROVIDER_USER }}
-          PROVIDER_PASS: ${{ secrets.PROVIDER_PASS }}
+        # No env block on purpose: PROVIDER_* arrive from $GITHUB_ENV, so whatever credential is
+        # in force (an acquired trial, else the stored secret) is what Tuliprox expands.
         run: |
           set -euo pipefail
+          if [ -z "${PROVIDER_USER:-}" ] || [ -z "${PROVIDER_PASS:-}" ]; then
+            echo "::error::no provider credential in force (acquisition failed and PROVIDER_* are unset)"
+            exit 1
+          fi
           ./tuliprox -H "$PWD" -c config/config.yml -i config/source.yml -l info
           test -s work/edge_list.m3u
           echo "channels: $(grep -c '^#EXTINF' work/edge_list.m3u)"
@@ -82,18 +154,12 @@ jobs:
       - name: Record provider account health
         env:
           OUT_DIR: dist
-          UPSTREAM_URL: ${{ secrets.PROVIDER_URL }}
-          UPSTREAM_USER: ${{ secrets.PROVIDER_USER }}
-          UPSTREAM_PASS: ${{ secrets.PROVIDER_PASS }}
+          # UPSTREAM_* come from $GITHUB_ENV, so this reports on the credential actually in force.
         run: node build/probe_upstream.mjs
 
       # Non-fatal: a missing guide must not stop the channels from shipping.
       - name: Fetch EPG
         continue-on-error: true
-        env:
-          PROVIDER_URL: ${{ secrets.PROVIDER_URL }}
-          PROVIDER_USER: ${{ secrets.PROVIDER_USER }}
-          PROVIDER_PASS: ${{ secrets.PROVIDER_PASS }}
         run: |
           set -euo pipefail
           curl -fsSL --max-time 180 -A 'Mozilla/5.0' \
@@ -116,8 +182,10 @@ jobs:
       - name: Assert the build leaks no provider credentials
         run: |
           set -euo pipefail
-          # The provider host must not appear anywhere in the published payload.
-          HOST="$(printf %s '${{ secrets.PROVIDER_URL }}' | sed -E 's#^https?://##; s#/.*##')"
+          # Gate the host ACTUALLY USED by this build, taken from $GITHUB_ENV. Reading the stored
+          # secret instead would scan for a host nobody fetched from whenever an acquired trial
+          # names a different panel — a silent hole in the gate.
+          HOST="$(printf %s "${PROVIDER_URL:-}" | sed -E 's#^https?://##; s#/.*##')"
           if [ -n "$HOST" ] && grep -rIl -- "$HOST" dist >/dev/null 2>&1; then
             echo "::error::provider host $HOST leaked into dist/"
             grep -rIl -- "$HOST" dist
@@ -135,24 +203,22 @@ jobs:
           npx --yes wrangler@4 pages project create "$PAGES_PROJECT" --production-branch=main 2>&1 \
             | grep -v "already exists" || true
 
-      # GitHub secrets are the single source of truth for the edge's env.
-      - name: Sync edge environment from repository secrets
+      # The edge must receive the credential that ACTUALLY built this deploy — an acquired trial
+      # when one was minted, otherwise the stored secret. UPSTREAM_* are read from $GITHUB_ENV.
+      - name: Sync edge environment
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CU: ${{ secrets.CLIENT_USER }}
           CP: ${{ secrets.CLIENT_PASS }}
-          UU: ${{ secrets.PROVIDER_USER }}
-          UP: ${{ secrets.PROVIDER_PASS }}
-          UURL: ${{ secrets.PROVIDER_URL }}
         run: |
           set -euo pipefail
           put() { printf '%s' "$2" | npx --yes wrangler@4 pages secret put "$1" --project-name "$PAGES_PROJECT" >/dev/null; }
           put CLIENT_USER "$CU"
           put CLIENT_PASS "$CP"
-          put UPSTREAM_USER "$UU"
-          put UPSTREAM_PASS "$UP"
-          put UPSTREAM_URL "$UURL"
+          put UPSTREAM_USER "${UPSTREAM_USER:?}"
+          put UPSTREAM_PASS "${UPSTREAM_PASS:?}"
+          put UPSTREAM_URL "${UPSTREAM_URL:?}"
           echo "edge env synced"
 
       - name: Deploy to Cloudflare Pages

@@ -1,7 +1,5 @@
 templates:
   - name: ALL_CHAN
     value: 'Group ~ ".*"'
-  - name: DROP_SHOPPING
-    value: 'NOT (Group ~ "(?i).*(shopping|teleshopping|home shopping).*")'
-  - name: DROP_ADULT
-    value: 'NOT (Group ~ "(?i).*(adult|xxx|18\\+)")'
+  - name: DROP_NONENG
+    value: ' Not (Group ~ "(?i)^(DK|CH|ARG|AR|PL|AL|TR|PT|ES|BR|MX|IN|HR|SE|IT|NL|FR|DE|USA Latin|USA Religion|Slovenia|Austria|Finland|Norway|Ukraine|Serbia|EX-YU|Montenegro|Belarus|Georgia|Latino|Chile|Honduras|El Salvador|Cuba|Ecuador|Dominican|Columbia|Bolivia|Puerto Rico|Guatemala|Nicaragua|Uruguay|Panama|Peru|Suriname|Costa Rica|Paraguay|Venezuela|Nepal|Sriacs|Kurdistan):")'

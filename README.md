@@ -46,20 +46,43 @@ written into any published file**.
 ## Repository layout
 
 ```
+Makefile                make test / make test-live
 config/                 Tuliprox inputs + filter templates
 build/                  make_xtream.mjs (index builder), acquire_trial.py (credential renewal),
-                        monitor_edge.py, verify_edge.py, verify_renewal_policy.py,
-                        verify_credential_persistence.py
+                        monitor_edge.py, run_tests.py (the suite), verify_edge.py,
+                        verify_renewal_policy.py, verify_credential_persistence.py
 functions/              Cloudflare Pages Functions implementing the Xtream API
 .github/workflows/      tuliprox-edge.yml (build + deploy), edge-monitor.yml (cloud watchdog)
 docs/OPERATIONS.md      the browser-only operations runbook
 ```
 
-## Verifying
+## Testing
 
-`build/verify_edge.py` performs 27 end-to-end assertions against any base URL and is used both as
-the deploy's own smoke test and by the cloud monitor:
+```bash
+make test        # offline: no network, no credentials, no provider contact. This gates every build.
+make test-live   # the above, plus 27 assertions against the deployed production edge
+```
+
+`build/run_tests.py` is the single entrypoint and CI runs exactly it, so a local run and a build can
+never check different things. It reports `pass / fail / skip` and only a **fail** breaks the suite —
+a skip (a missing optional tool) is printed loudly so it can never pass itself off as success.
+
+What the offline group pins:
+
+| Check | Why it exists |
+|---|---|
+| `verify_renewal_policy.py` | the 24h-cadence / 12h-floor decision matrix, and that no case can reach the signup path |
+| `verify_credential_persistence.py` | runs the workflow's **own** `run:` blocks, proving a credential's age survives between builds |
+| `py_compile`, `node --check` (as ESM) | syntax, including the Pages Functions |
+| workflows parse | a broken workflow can't be caught by CI, since CI is the thing that breaks |
+| secret hygiene | `.cred/`, `.dev.vars`, `.env` are untracked and unstageable |
+
+The live group runs `build/verify_edge.py`, the same 27 assertions used as the deploy's own smoke
+test and by the cloud monitor. Point it anywhere:
 
 ```bash
 BASE=https://tuliprox-edge-gateway.pages.dev CLIENT_USER=... CLIENT_PASS=... python3 build/verify_edge.py
 ```
+
+> If your default `python3` lacks PyYAML, set `YAML_PYTHON=/path/to/python` rather than installing
+> anything — the workflow-parse check will use it.

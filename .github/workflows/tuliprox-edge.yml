@@ -74,14 +74,11 @@ jobs:
           fi
           echo "client credentials present"
 
-      # Network-free guards on the renewal rule and the state that carries it. Neither failure mode
-      # is visible in a green build — one silently churns free trials at the provider, the other
-      # lets the credential lapse while the catalogue keeps serving — so they are pinned here.
-      - name: Verify the renewal policy and credential persistence
-        run: |
-          set -euo pipefail
-          python3 build/verify_renewal_policy.py
-          python3 build/verify_credential_persistence.py
+      # The repo's canonical suite, exactly as `make test` runs it locally — one entrypoint, so CI
+      # and a developer's machine can never check different things. Offline by design (no network,
+      # no credentials, no provider contact); the live edge is asserted after deploy instead.
+      - name: Run the test suite
+        run: python3 build/run_tests.py
 
       # Restore the credential the PREVIOUS build settled on. Repository secrets are only the
       # bootstrap and the fallback: GITHUB_TOKEN cannot rewrite a repository secret, so without

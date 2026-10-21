@@ -20,7 +20,7 @@ sources:
       - provider
     targets:
       - name: edge_list
-        filter: '!ALL_CHAN! AND !DROP_NONENG!'
+        filter: '!ALL_CHAN! AND !DROP_NONENG! AND !DROP_RELIGION!'
         output:
           - type: m3u
             filename: edge_list.m3u

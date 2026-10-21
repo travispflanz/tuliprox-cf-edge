@@ -2,5 +2,8 @@ templates:
   - name: ALL_CHAN
     value: 'Group ~ ".*"'
   - name: DROP_NONENG
-    value: 'NOT (Group ~ "(?i)^\s*(DK|CH|ARG|AR|PL|AL|TR|PT|ES|BR|MX|IN|HR|SE|IT|NL|FR|DE|Latino|USA Latin|Slovenia|Austria|Finland|Norway|Ukraine|Serbia|EX-YU|Montenegro|Belarus|Georgia|Chile|Honduras|El Salvador|Cuba|Ecuador|Dominican|Colombia|Bolivia|Puerto Rico|Guatemala|Nicaragua|Uruguay|Panama|Peru|Suriname|Costa Rica|Paraguay|Venezuela|Nepal|Sriacs|Kurdistan)\s*(:|$)")'  - name: DROP_RELIGION
-    value: ' Not (Group ~ "(?i)^(USA Religion):")'
+    value: 'NOT (Group ~ "(?i)^\s*(DK|CH|ARG|AR|PL|AL|TR|PT|ES|BR|MX|IN|HR|SE|IT|NL|FR|DE|Latino|USA Latin|Slovenia|Austria|Finland|Norway|Ukraine|Serbia|EX-YU|Montenegro|Belarus|Georgia|Chile|Honduras|El Salvador|Cuba|Ecuador|Dominican|Colombia|Bolivia|Puerto Rico|Guatemala|Nicaragua|Uruguay|Panama|Peru|Suriname|Costa Rica|Paraguay|Venezuela|Nepal|Sriacs|Kurdistan)\s*(:|$)")'  
+  - name: DROP_RELIGION
+    value: 'NOT (Group ~ "(?i)^\s*(USA RELIGION)\s*(:|$)")'  
+
+

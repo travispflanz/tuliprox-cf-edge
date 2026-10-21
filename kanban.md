@@ -17,7 +17,12 @@
 - [x] Phase 8: **Self-renewing provider credential** — `build/acquire_trial.py` obtains a trial
       straight from the provider's own API (no email/OTP/captcha/browser). It REUSES a healthy
       credential and signs up only when that lapses or drops under `MIN_HOURS_LEFT`, deliberately
-      avoiding ~4 signups/day of churn that could read as automated abuse. Non-fatal: any failure
+      avoiding ~4 signups/day of churn that could read as automated abuse. Renewal cadence is 24h
+      with a 12h safety floor, so a ~36h trial is replaced with ~12h of overlap — never a window
+      where the playlist serves a dead account. The credential AND its acquisition time persist
+      between builds (`.cred/provider.json`, carried in the Actions cache), because GITHUB_TOKEN
+      cannot rewrite a repo secret: without that the seed ages out and every build mints a trial.
+      Two network-free harnesses pin the rule and the persistence wiring. Non-fatal: any failure
       falls back to the seeded `PROVIDER_*` secret. Also fixed a silent hole in the leak gate (it
       scanned for the stored secret's host even when a different panel was actually used).
 

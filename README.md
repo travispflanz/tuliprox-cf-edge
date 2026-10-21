@@ -24,10 +24,12 @@ provider's own Xtream API — no server, no VPS, no cold starts.
 No part of this project depends on a local machine. It is built, served and supervised entirely by
 GitHub and Cloudflare, and it is operated from a browser — see the runbook.
 
-The provider account renews itself: the build reuses the credential in force while it is healthy and,
-once it's dead or nearly expired, acquires a fresh trial directly from the provider's API — **no
-email, no OTP, no browser, no manual rotation**. It reuses rather than re-signing-up on every run on
-purpose: ~4 trials/day of signup churn would risk the provider treating it as automated abuse.
+The provider account renews itself on a **24-hour cadence**: a fresh trial is acquired straight from
+the provider's API — **no email, no OTP, no browser, no manual rotation** — about 12 hours before the
+~36-hour trial it replaces dies, so the playlist never has a window with a dead account. That is ~1
+signup/day rather than the ~4/day a signup-per-build would produce; the low rate is the point, since
+request churn is what would risk the provider treating this as automated abuse. The credential and
+its acquisition time are persisted across builds in the workflow's Actions cache.
 
 ## How it works
 
@@ -45,7 +47,8 @@ written into any published file**.
 ```
 config/                 Tuliprox inputs + filter templates
 build/                  make_xtream.mjs (index builder), acquire_trial.py (credential renewal),
-                        monitor_edge.py, verify_edge.py
+                        monitor_edge.py, verify_edge.py, verify_renewal_policy.py,
+                        verify_credential_persistence.py
 functions/              Cloudflare Pages Functions implementing the Xtream API
 .github/workflows/      tuliprox-edge.yml (build + deploy), edge-monitor.yml (cloud watchdog)
 docs/OPERATIONS.md      the browser-only operations runbook

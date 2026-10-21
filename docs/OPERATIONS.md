@@ -119,15 +119,27 @@ waiting for the next 6-hour cycle.
 
 ### B. The provider account — now automatic ✅
 
-**There is nothing to do here any more.** Trials last ~36–48 hours, which used to be the one
-recurring manual job. The build now maintains its own credential:
+**There is nothing to do here any more.** Trials last ~36 hours, which used to be the one recurring
+manual job. The build now maintains its own credential on a **24-hour cadence** — it renews once a
+day, so on a 36-hour trial the replacement always arrives with about **12 hours of overlap** and
+there is never a window where the playlist serves a dead account. It also keeps the rate at roughly
+**1 signup a day**, against the ~4 a day that signing up on every build would produce; that churn is
+what would risk the provider reading this as automated abuse and withdrawing the free trial.
 
-- On every run it checks the credential currently in force.
-- **Healthy → it is reused, and no signup is made.** This is deliberate: signing up on every
-  6-hour build would create ~4 trials a day, and that churn risks the provider treating this as
-  automated abuse and withdrawing the free trial entirely.
-- **Dead, or under `MIN_HOURS_LEFT` (default 12) hours left → a fresh trial is acquired** straight
-  from the provider's API and adopted for that build.
+Two rules decide it, both in `build/acquire_trial.py`:
+
+| Rule | Default | Meaning |
+|---|---|---|
+| `RENEW_EVERY_HOURS` | `24` | replace the credential once it is a day old |
+| `MIN_HOURS_LEFT` | `12` | safety floor — renew regardless of age once this little life is left |
+
+The floor is a net, not the engine: it covers a lost timestamp, a shorter-than-expected trial, or an
+earlier renewal that failed.
+
+**The credential's age is carried from one build to the next.** The workflow's own token cannot
+rewrite a repository secret, so the credential *and its acquisition time* are written to
+`.cred/provider.json` and persisted across runs in the workflow's Actions cache. That file is what
+makes the cadence measurable — and it is why the seed secret below is only ever a bootstrap.
 
 Acquisition needs **no email, no OTP and no browser** — the provider returns the credentials in its
 own poll response. An email *address* is still required as an input, because the provider's dedup

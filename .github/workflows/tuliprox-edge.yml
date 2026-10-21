@@ -74,16 +74,57 @@ jobs:
           fi
           echo "client credentials present"
 
-      # Seed the effective provider credential from the stored secrets. The acquisition step
-      # overwrites these in $GITHUB_ENV when it succeeds, so every later step — including
-      # Tuliprox's own ${env:PROVIDER_*} config expansion — transparently uses whichever is in force.
-      - name: Seed provider credentials from repository secrets
+      # Network-free guards on the renewal rule and the state that carries it. Neither failure mode
+      # is visible in a green build — one silently churns free trials at the provider, the other
+      # lets the credential lapse while the catalogue keeps serving — so they are pinned here.
+      - name: Verify the renewal policy and credential persistence
+        run: |
+          set -euo pipefail
+          python3 build/verify_renewal_policy.py
+          python3 build/verify_credential_persistence.py
+
+      # Restore the credential the PREVIOUS build settled on. Repository secrets are only the
+      # bootstrap and the fallback: GITHUB_TOKEN cannot rewrite a repository secret, so without
+      # this the seed would silently age out and every build would mint a brand-new trial
+      # (~4 signups/day) — the exact churn this design exists to avoid. Rolling key + prefix
+      # restore, because a cache is immutable per key: each run saves a fresh one and restores the
+      # most recent.
+      - name: Restore the credential persisted by the previous build
+        uses: actions/cache/restore@v4
+        with:
+          path: .cred
+          key: provider-cred-${{ github.run_id }}
+          restore-keys: provider-cred-
+
+      # Seed the effective provider credential. A credential persisted by an earlier build wins,
+      # because it is that credential's real age — not the aging secret's — that decides when the
+      # next trial is due. The acquisition step overwrites these in $GITHUB_ENV when it succeeds,
+      # so every later step — including Tuliprox's own ${env:PROVIDER_*} config expansion —
+      # transparently uses whichever is in force.
+      - name: Seed provider credentials from the persisted file or repository secrets
         env:
           PU: ${{ secrets.PROVIDER_URL }}
           PUN: ${{ secrets.PROVIDER_USER }}
           PP: ${{ secrets.PROVIDER_PASS }}
         run: |
           set -euo pipefail
+          CRED="$GITHUB_WORKSPACE/.cred/provider.json"
+          SOURCE="repository secrets (bootstrap)"
+          # Read with python3 — already a hard dependency of this job (the acquisition script) —
+          # rather than jq, so the block stays portable and is exercisable outside Actions.
+          jget() { python3 -c 'import json,sys; print((json.load(open(sys.argv[1])) or {}).get(sys.argv[2]) or "")' "$1" "$2"; }
+          if [ -s "$CRED" ]; then
+            R_URL="$(jget "$CRED" url)"
+            R_USER="$(jget "$CRED" user)"
+            R_PASS="$(jget "$CRED" pass)"
+            if [ -n "$R_URL" ] && [ -n "$R_USER" ] && [ -n "$R_PASS" ]; then
+              PU="$R_URL"; PUN="$R_USER"; PP="$R_PASS"
+              SOURCE="the credential persisted by the previous build"
+            else
+              echo "::warning::the persisted credential is incomplete — falling back to repository secrets"
+            fi
+          fi
+          echo "credential source: $SOURCE"
           # Both aliases are exported: Tuliprox's config expands ${env:PROVIDER_*}, while the
           # edge/probe scripts read UPSTREAM_*. Naming them once here means no later step has to
           # re-inject a secret and silently override an acquired trial.
@@ -102,7 +143,13 @@ jobs:
         continue-on-error: true
         env:
           TRIAL_EMAIL_BASE: ${{ vars.TRIAL_EMAIL_BASE || 'taskgobbler' }}
+          # Renewal cadence: replace the credential once a day. Trials here last ~36h, so a 24h
+          # cadence leaves ~12h of overlap — the fresh credential always lands well before the old
+          # one dies, so the playlist never has a window with a dead account, and the signup rate
+          # stays at ~1/day rather than ~4/day. MIN_HOURS_LEFT is only the safety floor.
+          RENEW_EVERY_HOURS: ${{ vars.RENEW_EVERY_HOURS || '24' }}
           MIN_HOURS_LEFT: ${{ vars.MIN_HOURS_LEFT || '12' }}
+          CRED_FILE: .cred/provider.json
         run: |
           set -euo pipefail
           if [ "${{ inputs.force_trial }}" = "true" ]; then
@@ -132,8 +179,59 @@ jobs:
           case "${{ steps.trial.outputs.status }}" in
             ok)     echo "provider credential: freshly acquired trial (auto-renewed)" ;;
             reused) echo "provider credential: existing trial, still healthy (reused — no signup made)" ;;
-            *)      echo "::warning::acquisition did not succeed (status=${{ steps.trial.outputs.status }}) — using the stored PROVIDER_* secret" ;;
+            *)      echo "::warning::acquisition did not succeed (status=${{ steps.trial.outputs.status }}) — using the credential already in force" ;;
           esac
+
+      # Persist whatever credential this build settled on so the next run restores exactly it and
+      # the 24h cadence can be measured from that credential's real age. A single writer, so it is
+      # correct whichever path was taken (persisted, seeded, or freshly acquired).
+      - name: Record the credential in force for the next build
+        env:
+          NEW_EXP: ${{ steps.trial.outputs.expires_at }}
+          SOURCE: ${{ steps.trial.outputs.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.cred"
+          CRED="$GITHUB_WORKSPACE/.cred/provider.json"
+          python3 - "$CRED" <<'PY'
+          import datetime as dt, json, os, sys
+
+          path = sys.argv[1]
+          user = os.environ.get("PROVIDER_USER", "")
+          url = os.environ.get("PROVIDER_URL", "")
+          expires = os.environ.get("NEW_EXP", "")
+          acquired = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+          prev = {}
+          try:
+              with open(path, encoding="utf-8") as fh:
+                  prev = json.load(fh) or {}
+          except Exception:
+              prev = {}
+
+          if prev.get("user") == user and prev.get("url") == url:
+              # The credential is unchanged, so keep its ORIGINAL acquisition time. Re-stamping
+              # "now" on every build would make the account look permanently brand new, the 24h
+              # cadence would never come due, and the renewal would silently never happen.
+              acquired = prev.get("acquired_at") or acquired
+              # A reuse reports no expiry, so carry the previously known one forward.
+              expires = expires or (prev.get("expires_at") or "")
+
+          with open(path, "w", encoding="utf-8") as fh:
+              json.dump({"url": url, "user": user, "pass": os.environ.get("PROVIDER_PASS", ""),
+                         "acquired_at": acquired, "expires_at": expires,
+                         "source": os.environ.get("SOURCE", "")}, fh)
+          print(f"recorded credential {user} (acquired {acquired}, "
+                f"expires {expires or 'unknown'}, source {os.environ.get('SOURCE', '')})")
+          PY
+
+      - name: Persist the credential for the next build
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .cred
+          key: provider-cred-${{ github.run_id }}
 
       # Fetches, filters and normalises the playlist. `-H` pins the working dir to the repo,
       # otherwise Tuliprox derives its home from the binary's own location.

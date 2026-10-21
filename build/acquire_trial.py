@@ -28,11 +28,22 @@ FLOW (HTTP+JSON against the provider's own API — no browser, no captcha, no fo
 
 Flags:
   (none)          always acquire a fresh trial
-  --if-needed     reuse the credential already in $PROVIDER_* when it is still healthy, and only
-                  sign up when it is dead or has less than MIN_HOURS_LEFT left. This is what the
-                  build uses: signing up on every 6h build would create ~4 trials/day, and that
-                  churn risks the provider treating this as automated abuse.
+  --if-needed     reuse the credential already in $PROVIDER_* while it is still healthy, and sign
+                  up only when a renewal is actually due. This is what the build uses.
   --force         always acquire, even under --if-needed (for testing the acquisition path)
+
+WHEN A RENEWAL IS DUE (--if-needed)
+  1. CADENCE — the credential in force is RENEW_EVERY_HOURS (default 24) old or older.
+     Trials here last ~36h, so renewing once a day leaves ~12h of overlap: a fresh credential is
+     always obtained WELL BEFORE the old one dies, so the playlist never has a window where its
+     account is dead. It also holds the signup rate at ~1/day instead of ~4/day, which is the
+     whole point — request churn is what risks the provider reading this as automated abuse.
+  2. FLOOR — under MIN_HOURS_LEFT (default 12) of life remains, whatever the age. Covers a
+     lost/unknown timestamp, a shorter-than-expected trial, or an earlier renewal that failed.
+
+  The age is read from the state file the build persists between runs (CRED_FILE). When that file
+  is absent — the very first run, bootstrapping from repository secrets — the age is UNKNOWN and
+  only the floor applies. Never assume fresh: assuming fresh is what would silently skip a renewal.
 
 Env:
   TRIAL_EMAIL        full address to request with (default: a fresh alias, see below)
@@ -41,7 +52,9 @@ Env:
   PROVIDER_SITE      default https://www.weselliptv.com
   PANEL_URLS         comma-separated, default http://kytv.xyz,http://kemotvpromax.xyz
   TRIAL_POLL_TRIES   default 40        TRIAL_POLL_WAIT default 1.5 (seconds)
-  MIN_HOURS_LEFT     default 12 — reuse threshold for --if-needed
+  RENEW_EVERY_HOURS  default 24 — renewal cadence under --if-needed
+  MIN_HOURS_LEFT     default 12 — renewal floor under --if-needed
+  CRED_FILE          default .cred/provider.json — the renewal age is read from here
   PROVIDER_URL/USER/PASS  the credential in force, inspected by --if-needed
 
 Writes status/username/password/url/email/expires to $GITHUB_OUTPUT when present
@@ -74,9 +87,20 @@ PROXY_PORTS = range(10010, 10040)
 POLL_TRIES = int(os.environ.get("TRIAL_POLL_TRIES") or "40")
 POLL_WAIT = float(os.environ.get("TRIAL_POLL_WAIT") or "1.5")
 
-# Under --if-needed, a credential with at least this much life left is reused rather than
-# replaced. Kept well above the 6h build cadence so a healthy account is never churned.
+# Renewal cadence: once the credential in force reaches this age, the next build replaces it.
+# Trials here live ~36h, so a 24h cadence leaves ~12h of overlap — the fresh credential is obtained
+# well before the old one dies, so the playlist never has a window with a dead account. It also
+# holds the signup rate at ~1/day instead of ~4/day, which is what would read as abuse.
+RENEW_EVERY_HOURS = float(os.environ.get("RENEW_EVERY_HOURS") or "24")
+
+# Safety floor: renew regardless of age once this little life is left. This is purely the net for an
+# unknown timestamp, a shorter-than-expected trial, or an earlier renewal that failed — it does not
+# drive the normal cadence.
 MIN_HOURS_LEFT = float(os.environ.get("MIN_HOURS_LEFT") or "12")
+
+# The build records the credential it settled on here so the next run can age it. Absent on the
+# first run (bootstrap from repository secrets), which reads as UNKNOWN age — never as fresh.
+CRED_FILE = os.environ.get("CRED_FILE") or ".cred/provider.json"
 
 # Registration edges reset connections that arrive without a browser-like UA.
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -181,6 +205,27 @@ def poll_task(task_id: str) -> dict:
     return {}
 
 
+def credential_age_hours() -> float | None:
+    """Hours since the credential in force was acquired, from the state file the build persists.
+
+    Returns None when the age cannot be established (no state file yet, unreadable, malformed, or
+    a future timestamp) — the caller then falls back to the expiry floor alone. It must never
+    assume the credential is fresh: that is exactly what would silently skip a renewal.
+    """
+    try:
+        with open(CRED_FILE, encoding="utf-8") as fh:
+            stamp = (json.load(fh) or {}).get("acquired_at")
+        if not stamp:
+            return None
+        when = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        hours = (dt.datetime.now(dt.timezone.utc) - when).total_seconds() / 3600
+        return round(hours, 2) if hours >= 0 else None
+    except Exception:
+        return None
+
+
 def current_credential_status() -> tuple[str | None, str, float | None]:
     """Inspect the credential already in the environment (PROVIDER_*).
 
@@ -238,18 +283,30 @@ def main() -> int:
     force = "--force" in argv
     if_needed = "--if-needed" in argv
 
-    # Deliberately conservative: a healthy credential is REUSED, because signing up on every
-    # build would mean ~4 new trials a day — churn that risks the provider treating this as
-    # automated abuse and withdrawing the free trial entirely.
+    # Deliberately conservative: a healthy credential is REUSED until its renewal is actually due
+    # — see the CADENCE and FLOOR rules at the top of this file. Signing up on every 6h build would
+    # mean ~4 trials/day, and that churn is what risks the provider treating this as automated
+    # abuse and withdrawing the free trial entirely.
     if if_needed and not force:
         panel, user, hours = current_credential_status()
-        if panel and (hours is None or hours > MIN_HOURS_LEFT):
+        age = credential_age_hours()
+        usable = bool(panel) and (hours is None or hours > MIN_HOURS_LEFT)
+        due = age is not None and age >= RENEW_EVERY_HOURS
+        if usable and not due:
             shown = "expiry not reported" if hours is None else f"{hours}h left"
-            log(f"  reusing the credential already in force: {user} on {panel} ({shown})")
-            log("  no signup made")
-            emit(status="reused", username=user, url=panel)
+            aged = "age unknown (bootstrap)" if age is None else f"age {age}h"
+            log(f"  reusing the credential already in force: {user} on {panel} ({shown}, {aged})")
+            log(f"  no signup made — renewal falls due at {RENEW_EVERY_HOURS}h old "
+                f"or {MIN_HOURS_LEFT}h left")
+            emit(status="reused", username=user, url=panel,
+                 age_hours="" if age is None else age)
             return 0
-        log(f"  credential in force is unusable (panel={panel}, hours_left={hours}) — acquiring a fresh one")
+        reasons = []
+        if not usable:
+            reasons.append(f"panel={panel}, hours_left={hours}")
+        if due:
+            reasons.append(f"age {age}h has reached the {RENEW_EVERY_HOURS}h cadence")
+        log(f"  renewal due ({'; '.join(reasons)}) — acquiring a fresh trial")
 
     email = os.environ.get("TRIAL_EMAIL") or mint_alias()
     log("=== acquiring a provider trial via API ===")

@@ -13,7 +13,7 @@ monitor and the deploy's own smoke test therefore can never drift apart.
 
 VERDICTS
   ok     — edge healthy, provider account has more than WARN_HOURS left
-  warn   — edge healthy, but the provider account expires soon (a credential rotation is due)
+  warn   — edge healthy, but the provider account expires soon (automated renewal is overdue)
   alert  — the edge is broken (verifier failed, or the provider account is dead)
 
 The warn/alert split matters: when a trial lapses the catalogue keeps serving 13k channels while
@@ -35,7 +35,12 @@ import urllib.request
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 VERIFIER = REPO_ROOT / "build" / "verify_edge.py"
 
-WARN_HOURS = float(os.environ.get("WARN_HOURS", "12"))
+# The build renews the provider credential once a day (RENEW_EVERY_HOURS on ~36h trials) and has a
+# 12h safety floor, so the healthy sawtooth never falls below ~6h before a build replaces it. This
+# threshold sits BELOW that floor deliberately: in this system "expires in a few hours" no longer
+# means "a human must rotate something" — it means the AUTOMATED renewal is overdue, which is a real
+# defect. Warning any earlier would fire on the normal cadence and turn into noise.
+WARN_HOURS = float(os.environ.get("WARN_HOURS", "6"))
 # Builds run every 6h, so this much silence means the pipeline itself has stopped — the failure
 # mode nobody notices, because the last-good deploy keeps serving happily.
 STALE_HOURS = float(os.environ.get("STALE_HOURS", "14"))
@@ -149,15 +154,19 @@ def exp_str():
 if auth != "1":
     problems.append(
         f"provider account is NOT active (auth={auth or '?'}, status={status}) — "
-        f"rotate the PROVIDER_* repository secrets, then re-run the build. "
-        f"Streams will fail while the catalogue still serves."
+        f"the automated renewal has not replaced it. Re-run the build; if it still fails, "
+        f"run the workflow with force_trial. Streams fail while the catalogue still serves."
     )
 elif exp_ts and exp_ts < now:
-    problems.append(f"provider account EXPIRED at {exp_str()} — rotate the PROVIDER_* repository secrets")
+    problems.append(
+        f"provider account EXPIRED at {exp_str()} — the automated renewal did not land in time. "
+        f"Re-run the build (it will acquire a fresh trial), or dispatch it with force_trial."
+    )
 elif hours_left is not None and hours_left < WARN_HOURS:
     warnings.append(
-        f"provider account expires in {hours_left}h (at {exp_str()}) — rotate the PROVIDER_* "
-        f"repository secrets before then, or every stream will start failing"
+        f"provider account expires in {hours_left}h (at {exp_str()}) — the automated renewal is "
+        f"OVERDUE: it renews at ~24h old and should never let this drop below {WARN_HOURS}h. "
+        f"Check the most recent build run."
     )
 else:
     notes.append(f"account: status={status} auth={auth} exp={exp_str()}"

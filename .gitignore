@@ -2,6 +2,8 @@
 .env.*
 !.env.example
 .dev.vars
+# the credential the build persists between runs — carries provider credentials, never commit
+.cred/
 dist/
 work/
 data/

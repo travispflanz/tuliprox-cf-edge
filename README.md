@@ -12,7 +12,8 @@ step at all. A second scheduled workflow watches everything and opens a GitHub i
 | **Live edge** | https://tuliprox-edge-gateway.pages.dev |
 | **Builds** | [Actions → Build & Deploy Tuliprox Xtream Edge](https://github.com/travispflanz/tuliprox-cf-edge/actions/workflows/tuliprox-edge.yml) |
 | **Health alerts** | [Issues labelled `edge-alert`](https://github.com/travispflanz/tuliprox-cf-edge/issues?q=label%3Aedge-alert) |
-| **Secrets** | [Settings → Secrets → Actions](https://github.com/travispflanz/tuliprox-cf-edge/settings/secrets/actions) |
+| **Your playlist login** | [Settings → Variables → Actions](https://github.com/travispflanz/tuliprox-cf-edge/settings/variables/actions) — `CLIENT_USER` / `CLIENT_PASS`, readable and editable |
+| **Secrets** | [Settings → Secrets → Actions](https://github.com/travispflanz/tuliprox-cf-edge/settings/secrets/actions) — Cloudflare token only |
 | **Cloudflare** | [dash.cloudflare.com](https://dash.cloudflare.com) → Workers & Pages → `tuliprox-edge-gateway` |
 | **Currently serving** | ~9–10k live channels across ~120–165 categories, with EPG |
 
@@ -47,7 +48,7 @@ provider is the source of truth; the edge is a rebuildable cache.
 | Channels (the provider's lineup shifted) | Re-run the build | [§1.4](#14-force-a-rebuild) |
 | The provider account | **Nothing — it renews itself** | [§1.5](#15-the-provider-account--automatic) |
 | Which categories are included | Edit one config file in the browser | [§1.6](#16-change-what-the-playlist-contains) |
-| The login your players use | Change two GitHub secrets, re-run | [§1.7](#17-change-the-login-your-players-use) |
+| The login your players use | Change two GitHub variables, re-run | [§1.7](#17-change-the-login-your-players-use) |
 
 ## 1.2 Connecting a player
 
@@ -71,9 +72,24 @@ https://tuliprox-edge-gateway.pages.dev/get.php?username=<CLIENT_USER>&password=
 https://tuliprox-edge-gateway.pages.dev/xmltv.php?username=<CLIENT_USER>&password=<CLIENT_PASS>
 ```
 
-`CLIENT_USER` / `CLIENT_PASS` are credentials **you** chose, stored as GitHub secrets. They are
-deliberately not written down in this repository. GitHub cannot show a secret back to you once
-saved — if you've lost them, set new ones ([§1.7](#17-change-the-login-your-players-use)).
+`CLIENT_USER` / `CLIENT_PASS` are credentials **you** chose. They are stored as GitHub repository
+**variables**, not secrets, so you can read them back at any time:
+
+1. Open the [Variables page](https://github.com/travispflanz/tuliprox-cf-edge/settings/variables/actions),
+2. or run `gh variable get CLIENT_PASS`.
+
+Secrets are write-only — once saved, GitHub will never show the value again — which would make your
+own playlist password unlookupable and leave "reset it and re-point every player" as the only
+recourse. The threat model does not justify that: this is a **private** repository, and these
+credentials are already in plaintext in every player's URL.
+
+`CLIENT_2_USER` / `CLIENT_2_PASS` are the same thing for a **second** simultaneous viewer
+([§2.8](#28-why-two-credential-slots)). Leave both unset for a single viewer.
+
+> A credential must live in **one** place. If a name exists as both a variable and a secret, the
+> variable wins — but a reader that looks only at the secret will authenticate with the *stale*
+> value. That is a real outage this project has hit: it blinded the health monitor while the edge
+> was perfectly healthy. The suite now enforces that every workflow reads them the same way.
 
 > **After any change, refresh the playlist inside your player.** Players cache aggressively, so an
 > update can look like it didn't happen until you reload or re-add the playlist.
@@ -240,8 +256,8 @@ options:
 
 Do this if your `edge…` credentials leak, or you just want new ones.
 
-1. Open [Secrets](https://github.com/travispflanz/tuliprox-cf-edge/settings/secrets/actions)
-2. Update `CLIENT_USER` and `CLIENT_PASS`
+1. Open [Variables](https://github.com/travispflanz/tuliprox-cf-edge/settings/variables/actions)
+2. Update `CLIENT_USER` and `CLIENT_PASS` (`gh variable set CLIENT_USER --body '...'`)
 3. Re-run the build ([§1.4](#14-force-a-rebuild))
 
 ⚠️ **Unlike the provider rotation, this one does break your players.** These credentials are
@@ -288,7 +304,7 @@ empty secret or the credential leak gate firing — never bypass the gate, inspe
 | Serve Xtream / M3U / EPG | Cloudflare Pages Functions | always on |
 | Provider credential renewal | GitHub Actions (inside the build) | 24h per slot, staggered 12h |
 | Health monitoring + alerting | GitHub Actions (`Edge Monitor`) | every 4 hours |
-| Credential + secret storage | GitHub Secrets / Actions cache / Pages env | — |
+| Credential storage | GitHub Variables (your login) / Secrets (Cloudflare token) / Actions cache (provider slots) / Pages env | — |
 
 ```
 GitHub Actions  (cron 4h | push | manual dispatch)
@@ -355,11 +371,11 @@ Only `live/` is reachable from the shipped catalogue (the build is live-only), b
 Each run of **Build & Deploy Tuliprox Xtream Edge**:
 
 1. Downloads the official Tuliprox binary and **verifies its SHA-256** checksum
-2. Validates that client secrets are non-empty — an empty secret is indistinguishable from an unset
+2. Validates that the client credentials are non-empty — an empty value is indistinguishable from an unset
    one at runtime, so this turns a silent misconfiguration into an explicit failure
 3. Runs the **test suite** (`build/run_tests.py`) — offline, no credentials
 4. **Restores the credential persisted by the previous build** (Actions cache)
-5. **Seeds** the effective credential: the persisted one wins over the repository secret, because it
+5. **Seeds** the effective credential: the persisted one wins over the configured value, because it
    is *that* credential's real age which decides when renewal is due
 6. **Ensures a usable credential for each slot** — reuse while healthy, else acquire a fresh trial
 7. Runs **Tuliprox** one-shot: fetch → filter → normalise → `work/edge_list.m3u`
@@ -548,7 +564,7 @@ always deploy from the repo root.
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `CLIENT_USER`, `CLIENT_PASS` | **yes** | what your players log in with; baked into playlist URLs at build time |
+| ~~`CLIENT_USER`, `CLIENT_PASS`~~ | **moved** | now repository **variables** (see below) — do not re-create these as secrets |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | **yes** | deploy to Pages |
 | `PROVIDER_URL`, `PROVIDER_USER`, `PROVIDER_PASS` | optional | bootstrap + fallback credential for slot 1 |
 | `PROVIDER_2_URL`, `PROVIDER_2_USER`, `PROVIDER_2_PASS` | optional | same, for slot 2. Leave unset and the build mints slot 2 itself |
@@ -557,6 +573,8 @@ always deploy from the repo root.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `CLIENT_USER`, `CLIENT_PASS` | — | **your playlist login.** Required. Set with `gh variable set` |
+| `CLIENT_2_USER`, `CLIENT_2_PASS` | unset | second viewer's login, pinned to provider slot 2. Set both or neither |
 | `RENEW_EVERY_HOURS` | `24` | renewal cadence |
 | `MIN_HOURS_LEFT` | `6` | renewal safety floor (keep above the 4h build interval) |
 | `RENEW_STAGGER_HOURS` | `12` | how far slot 2 is held out of phase with slot 1 |

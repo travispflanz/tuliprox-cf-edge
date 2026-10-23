@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -129,6 +130,35 @@ check("the renewal floor leaves room for another build",
       "MIN_HOURS_LEFT: ${{ vars.MIN_HOURS_LEFT || '6' }}" in text)
 check(".cred/ is gitignored (it carries live provider credentials)",
       any(ln.strip() == ".cred/" for ln in (REPO / ".gitignore").read_text().splitlines()))
+
+print("\n=== every workflow reads the credentials the same way ===")
+# A credential that exists in BOTH repository variables and secrets, read differently by two
+# workflows, silently becomes two different credentials. That is exactly what happened: the build
+# moved CLIENT_* to variables while the monitor still read the old secret, so the watchdog spent
+# its life sending superseded credentials and alerting about an account that was perfectly fine.
+# One name must resolve to one value, so the rule is checked mechanically across every workflow
+# rather than by remembering to update each new reader.
+MIGRATABLE = ("CLIENT_USER", "CLIENT_PASS", "CLIENT_2_USER", "CLIENT_2_PASS",
+              "PROVIDER_URL", "PROVIDER_USER", "PROVIDER_PASS",
+              "PROVIDER_2_URL", "PROVIDER_2_USER", "PROVIDER_2_PASS")
+EXPR = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+wiring_bad: list[str] = []
+workflows = sorted((REPO / ".github" / "workflows").glob("*.yml"))
+for wf in workflows:
+    # Count inside `${{ ... }}` expressions ONLY. Scanning the raw file would also match prose in
+    # comments — including the comment that documents this very bug, which made the check fail on
+    # correct code. A read can only happen in an expression, so that is what gets inspected.
+    exprs = "\n".join(m.group(1) for m in EXPR.finditer(wf.read_text(encoding="utf-8")))
+    for name in MIGRATABLE:
+        bare = exprs.count(f"secrets.{name}")
+        paired = exprs.count(f"vars.{name} || secrets.{name}")
+        if bare != paired:
+            wiring_bad.append(f"{wf.name}: {name} ({bare} read(s), {paired} with a vars. fallback)")
+check(f"all {len(workflows)} workflows prefer vars.* over secrets.* for every credential",
+      not wiring_bad, "; ".join(wiring_bad))
+check("the monitor is actually covered by that check (it reads the credentials too)",
+      any("secrets.CLIENT_USER" in "".join(m.group(1) for m in
+          EXPR.finditer(wf.read_text(encoding="utf-8"))) for wf in workflows));
 
 print("\n=== bootstrap: no state yet ===")
 w = Workspace()

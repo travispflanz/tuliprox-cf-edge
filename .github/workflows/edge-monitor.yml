@@ -42,8 +42,16 @@ jobs:
         continue-on-error: true
         env:
           BASE: ${{ env.EDGE_ORIGIN }}
-          CLIENT_USER: ${{ secrets.CLIENT_USER }}
-          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
+          # MUST match the precedence the build uses (`vars.NAME || secrets.NAME`).
+          #
+          # This read `secrets.CLIENT_USER` alone, and when the build moved these credentials to
+          # repository VARIABLES the two stores drifted: the build authenticated with the new
+          # variable while the monitor kept sending the superseded secret. Every probe came back
+          # 401, the watchdog reported "provider account is NOT active" and alerted — a blind
+          # monitor about credentials that were, in fact, fine. One name in two stores with
+          # different values is the whole failure; the fix is to never let a reader pick the store.
+          CLIENT_USER: ${{ vars.CLIENT_USER || secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ vars.CLIENT_PASS || secrets.CLIENT_PASS }}
           SIMULATE: ${{ inputs.simulate || 'none' }}
         run: python3 build/monitor_edge.py
 

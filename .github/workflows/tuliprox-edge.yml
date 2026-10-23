@@ -59,22 +59,31 @@ jobs:
         run: |
           set -uo pipefail
           masked=0
+          unreadable=0
           for name in CLIENT_PASS CLIENT_2_PASS CLIENT_USER CLIENT_2_USER \
                       PROVIDER_PASS PROVIDER_USER PROVIDER_URL \
                       PROVIDER_2_PASS PROVIDER_2_USER PROVIDER_2_URL; do
-            val="$(gh api "repos/${GITHUB_REPOSITORY}/actions/variables/${name}" \
-                     --jq .value 2>/dev/null || true)"
-            # Only mask values long enough to be a credential: registering a short string would
-            # redact unrelated log text and make the build unreadable.
-            if [ -n "$val" ] && [ "${#val}" -gt 7 ]; then
-              echo "::add-mask::$val"
-              masked=$((masked + 1))
+            # `gh api` prints its ERROR BODY TO STDOUT, so `|| true` would capture a 133-character
+            # "Not Found" document and happily mask that instead of the credential — reporting
+            # success while protecting nothing. Only trust stdout when gh actually exited 0.
+            if val="$(gh api "repos/${GITHUB_REPOSITORY}/actions/variables/${name}" \
+                        --jq .value 2>/dev/null)"; then
+              # Only mask values long enough to be a credential: registering a short string makes
+              # Actions redact every incidental occurrence of it and the log becomes unreadable.
+              if [ -n "$val" ] && [ "${#val}" -gt 7 ]; then
+                echo "::add-mask::$val"
+                masked=$((masked + 1))
+              fi
+            else
+              unreadable=$((unreadable + 1))
             fi
           done
-          echo "masked $masked credential value(s) held as repository variables"
-          if [ "$masked" -eq 0 ]; then
-            echo "::warning::could not read any repository variable — values stored as VARIABLES" \
-                 "will appear in plaintext in this log. Keep passwords as SECRETS if that matters."
+          echo "masked $masked variable-held credential value(s); $unreadable not readable"
+          if [ "$masked" -eq 0 ] && [ "$unreadable" -gt 0 ]; then
+            echo "::warning::GITHUB_TOKEN cannot read repository variables, so any credential" \
+                 "stored as a VARIABLE appears in plaintext in this private log. That is an" \
+                 "accepted trade for being able to read and hand-edit them; move a value back to" \
+                 "a SECRET (which GitHub masks automatically) if you want it hidden instead."
           fi
 
       # Pinned to the current majors: v4/v3 still target Node 20, which GitHub is already

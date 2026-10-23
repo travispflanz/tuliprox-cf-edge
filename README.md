@@ -159,6 +159,12 @@ previous renewal that failed. Because builds run every 4 hours and the floor is 
 fail once and still be retried while the account is alive** — that relationship is what makes the
 pair of numbers safe, so if you raise the build interval, raise the floor too.
 
+**If a signup fails, it waits 12 hours before trying again** (`ACQUIRE_RETRY_HOURS`). A slot with
+no credential at all counts as "renewal due" on every build, so without this a provider-side
+hiccup would mean a signup attempt every 4 hours — six a day, which is the churn that gets free
+trials withdrawn. The other slot keeps serving while it waits, so there is nothing to lose by
+waiting. Need it sooner? Dispatch the build manually with **force_trial**, which skips the backoff.
+
 **The two slots are kept out of phase on purpose.** If both were acquired together they would renew
 together and expire together, so one bad renewal cycle would remove *all* capacity at once — the
 very outage the second slot exists to prevent. Slot 2's first renewal is therefore pulled forward to
@@ -254,6 +260,8 @@ embedded in the playlist URLs, so every player must be re-pointed afterwards.
 | **Stale deploy** warning | Scheduled builds stopped | Re-run ([§1.4](#14-force-a-rebuild)); GitHub pauses cron in inactive repos |
 | Channels **missing** that used to exist | Provider dropped them, or a filter removed them | Review `config/template.yml`, then rebuild |
 | **Changes don't appear** in the player | The player cached the playlist | Reload or re-add the playlist in the player |
+| Only **one device** can watch at a time | A provider slot is unhealthy or was never acquired | The monitor says which. It self-heals on a later build; a failed signup waits 12h, so use **`force_trial`** to retry now |
+| Both devices fail together | Every slot is dead | The monitor raises this as a hard alert — [§1.4](#14-force-a-rebuild) with **`force_trial`** |
 
 **Red build?** Open the run in **Actions** and expand the failing step. The usual causes are an
 empty secret or the credential leak gate firing — never bypass the gate, inspect the build instead.
@@ -493,9 +501,9 @@ and a **skip** is printed loudly so a missing optional tool can never pass itsel
 | Check | Why it exists |
 |---|---|
 | `verify_renewal_policy.py` | the 24h-cadence / 12h-floor decision matrix, boundaries, unknown age, and that no case can reach the signup path |
-| `verify_credential_persistence.py` | extracts and executes the workflow's **own** `run:` blocks, proving a credential's age survives between builds |
 | `verify_filter_config.py` | `source.yml`'s `filter:` and `template.yml` agree — no undefined reference, no orphaned template that silently does nothing, every regex compiles |
 | `verify_stream_slots.mjs` | the dual-credential stream path with `fetch` stubbed: per-viewer slot stability, spread across slots, failover, the 403 short-circuit, and that auth still gates everything |
+| `verify_credential_persistence.py` | drives `credential_state.py` directly: slot isolation, the preserved-`acquired_at` invariant, generation counting, fail-open health, the legacy upgrade path, the backoff stamp, and Actions log masking |
 | `py_compile` | Python syntax across `build/` |
 | `node --check` | JS syntax — via a `.mjs` copy, since `node --check` parses a `.js` file as CommonJS and would wrongly reject these ES modules |
 | workflows parse | a broken workflow can't be caught by CI, because CI is the thing that breaks |
@@ -547,6 +555,8 @@ always deploy from the repo root.
 | `RENEW_EVERY_HOURS` | `24` | renewal cadence |
 | `MIN_HOURS_LEFT` | `6` | renewal safety floor (keep above the 4h build interval) |
 | `RENEW_STAGGER_HOURS` | `12` | how far slot 2 is held out of phase with slot 1 |
+| `ACQUIRE_RETRY_HOURS` | `12` | wait this long after a FAILED signup before retrying |
+| `TRIAL_POLL_TRIES` | `120` | status polls (×1.5s) to await the provider's task queue |
 | `TRIAL_EMAIL_BASE` | `taskgobbler` | local part used to mint `+alias` addresses |
 
 **Cloudflare Pages environment** — synced automatically by every build; don't edit by hand:

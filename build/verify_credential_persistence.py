@@ -235,6 +235,37 @@ w8.run("record", PROVIDER_URL="http://legacy", PROVIDER_USER="LEGACY", PROVIDER_
 check("and its measured age survives the upgrade",
       w8.state()["1"]["acquired_at"] == "2026-02-02T00:00:00Z", str(w8.state()))
 
+print("\n=== the attempt stamp that powers the acquisition backoff ===")
+# Without a stamp, a slot that cannot be acquired is 'renewal due' on every build — six signup
+# attempts a day at a 4h interval. Proven necessary: slot 2's first acquisition failed
+# provider-side, and nothing then stopped the next build from trying again.
+wA = Workspace()
+wA.run("record", PROVIDER_URL="", PROVIDER_USER="", PROVIDER_PASS="", STATUS="failed")
+check("a failed slot with NO credential still records the attempt",
+      bool(wA.state().get("1", {}).get("last_attempt_at"))
+      and wA.state()["1"]["last_status"] == "failed", str(wA.state()))
+
+wB = Workspace()
+wB.run("record", **record_env(S1, S2, status="ok", status2="ok"))
+check("a successful slot records its status for the backoff to read",
+      wB.state()["2"]["last_status"] == "ok", str(wB.state()["2"]))
+wB.run("record", **record_env(S1, status="reused"))
+check("slot 2 keeps its credential AND gains the failed attempt stamp",
+      wB.state()["2"]["user"] == S2[1] and wB.state()["2"].get("last_status") == "ok",
+      str(wB.state()["2"]))
+
+print("\n=== Actions log masking (acquired credentials are not repository secrets) ===")
+wC = Workspace()
+p = wC.run("seed", GITHUB_ACTIONS="true", **seed_env(S1, S2))
+check("seeding emits ::add-mask:: for every credential it exports",
+      p.stdout.count("::add-mask::") >= 4, p.stdout.strip()[:200])
+check("the masks cover the passwords specifically",
+      f"::add-mask::{S1[2]}" in p.stdout and f"::add-mask::{S2[2]}" in p.stdout,
+      p.stdout.strip()[:200])
+p = wC.run("seed", **seed_env(S1))
+check("and no mask noise outside Actions", "::add-mask::" not in p.stdout,
+      p.stdout.strip()[:160])
+
 print("\n=== a transient gap must not erase a usable record ===")
 w9 = Workspace()
 w9.run("record", **record_env(S1, S2, status="ok", status2="ok"))

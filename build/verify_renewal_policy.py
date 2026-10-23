@@ -54,29 +54,37 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def write_state(hours_old: float | None, slot: int = 1, generation: int = 0,
-                legacy_flat: bool = False) -> None:
+                legacy_flat: bool = False, last_status: str = "",
+                last_attempt_hours: float | None = None) -> None:
     """Write a state file whose credential is `hours_old` old; None means 'no file at all'.
 
     `legacy_flat` writes the pre-slot document shape, to prove an existing deployment's measured
     age survives the upgrade instead of resetting to unknown and triggering a needless renewal.
+    `last_status`/`last_attempt_hours` drive the acquisition backoff.
     """
-    if hours_old is None:
+    if hours_old is None and not last_status:
         CRED.unlink(missing_ok=True)
         return
-    when = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_old)
-    entry = {
-        "url": PANEL, "user": USER, "pass": "secret",
-        "acquired_at": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "generation": generation,
-    }
+    entry: dict = {"url": PANEL, "user": USER, "pass": "secret", "generation": generation}
+    if hours_old is not None:
+        when = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_old)
+        entry["acquired_at"] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if last_status:
+        entry["last_status"] = last_status
+    if last_attempt_hours is not None:
+        tried = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=last_attempt_hours)
+        entry["last_attempt_at"] = tried.strftime("%Y-%m-%dT%H:%M:%SZ")
     doc = entry if legacy_flat else {"slots": {str(slot): entry}}
     CRED.write_text(json.dumps(doc), encoding="utf-8")
 
 
 def run_if_needed(hours_old: float | None, hours_left: float | None, slot: int = 1,
-                  generation: int = 0, legacy_flat: bool = False) -> tuple[int, str, bool]:
+                  generation: int = 0, legacy_flat: bool = False, last_status: str = "",
+                  last_attempt_hours: float | None = None,
+                  force: bool = False) -> tuple[int, str, bool]:
     """Stub the provider and run --if-needed. Returns (exit_code, stdout, signup_attempted)."""
-    write_state(hours_old, slot=slot, generation=generation, legacy_flat=legacy_flat)
+    write_state(hours_old, slot=slot, generation=generation, legacy_flat=legacy_flat,
+                last_status=last_status, last_attempt_hours=last_attempt_hours)
     at.SLOT = slot
     reached = {"signup": False}
 
@@ -93,7 +101,7 @@ def run_if_needed(hours_old: float | None, hours_left: float | None, slot: int =
     at.request_trial = boom
 
     argv = sys.argv
-    sys.argv = ["acquire_trial.py", "--if-needed", "--slot", str(slot)]
+    sys.argv = ["acquire_trial.py", "--force" if force else "--if-needed", "--slot", str(slot)]
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
@@ -166,6 +174,35 @@ check("slot 2 just before the stagger point -> reuse",
 rc, out, signup = run_if_needed(1.0, FLOOR - 1, slot=2, generation=5)
 check("the floor still applies to any slot regardless of generation",
       "renewal due" in out and not signup, out.strip()[:110])
+
+print("\n=== backoff after a failed acquisition (the provider-goodwill guard) ===")
+# A slot with no usable credential is 'renewal due' on EVERY build. At a 4h interval that is six
+# signup attempts a day — the churn that gets the free-trial route withdrawn. Proven necessary:
+# slot 2's first real acquisition failed provider-side with the task stuck EXECUTING.
+rc, out, signup = run_if_needed(None, 0.0, slot=2, generation=0,
+                                last_status="failed", last_attempt_hours=1.0)
+check("a recent failure suppresses the signup entirely",
+      rc == 0 and not signup and "backing off" in out, out.strip()[:160])
+
+rc, out, signup = run_if_needed(None, 0.0, slot=2, generation=0,
+                                last_status="failed",
+                                last_attempt_hours=at.ACQUIRE_RETRY_HOURS + 1)
+check("once the backoff window has passed it tries again",
+      "acquiring a fresh trial" in out, out.strip()[:160])
+
+rc, out, signup = run_if_needed(None, 0.0, slot=2, generation=0,
+                                last_status="reused", last_attempt_hours=1.0)
+check("a SUCCESSFUL last attempt never backs off",
+      "backing off" not in out, out.strip()[:160])
+
+rc, out, signup = run_if_needed(None, 0.0, slot=2, generation=0)
+check("no attempt on record is not treated as a recent failure",
+      "backing off" not in out, out.strip()[:160])
+
+rc, out, signup = run_if_needed(1.0, FLOOR - 1, slot=1,
+                                last_status="failed", last_attempt_hours=1.0, force=True)
+check("--force overrides the backoff (an operator asked explicitly)",
+      "backing off" not in out, out.strip()[:160])
 
 print("\n=== per-slot isolation ===")
 write_state(1.0, slot=1)

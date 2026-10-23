@@ -65,9 +65,11 @@ Env:
   TRIAL_EMAIL_DOMAIN default gmail.com
   PROVIDER_SITE      default https://www.weselliptv.com
   PANEL_URLS         comma-separated, default http://kytv.xyz,http://kemotvpromax.xyz
-  TRIAL_POLL_TRIES   default 40        TRIAL_POLL_WAIT default 1.5 (seconds)
+  TRIAL_POLL_TRIES   default 120       TRIAL_POLL_WAIT default 1.5 (seconds)
   RENEW_EVERY_HOURS  default 24 — renewal cadence under --if-needed
-  MIN_HOURS_LEFT     default 12 — renewal floor under --if-needed
+  MIN_HOURS_LEFT     default 6 — renewal floor under --if-needed
+  RENEW_STAGGER_HOURS  default cadence/2 — holds slot 2 out of phase with slot 1
+  ACQUIRE_RETRY_HOURS  default 12 — backoff after a FAILED acquisition
   CRED_FILE          default .cred/provider.json — the renewal age is read from here
   PROVIDER_URL/USER/PASS  the credential in force, inspected by --if-needed
 
@@ -98,7 +100,11 @@ EMAIL_DOMAIN = os.environ.get("TRIAL_EMAIL_DOMAIN") or "gmail.com"
 
 # Ports the provider's own client races; kept identical to the site's behaviour.
 PROXY_PORTS = range(10010, 10040)
-POLL_TRIES = int(os.environ.get("TRIAL_POLL_TRIES") or "40")
+# Wait up to ~3 minutes for the provider's task queue. Raised from 40 tries (60s) after a real
+# acquisition gave up while the task was still EXECUTING: the trial may well have been created and
+# then thrown away, which wastes a signup — the one thing worth avoiding here. Polling task-status
+# is cheap and is NOT a signup, so a generous budget costs the provider nothing.
+POLL_TRIES = int(os.environ.get("TRIAL_POLL_TRIES") or "120")
 POLL_WAIT = float(os.environ.get("TRIAL_POLL_WAIT") or "1.5")
 
 # Renewal cadence: once the credential in force reaches this age, the next build replaces it.
@@ -123,6 +129,13 @@ SLOT = 1
 # outage the second slot exists to prevent. A slot's FIRST renewal is therefore pulled forward to
 # this age; afterwards it rides the normal cadence, permanently offset from the other slot.
 RENEW_STAGGER_HOURS = float(os.environ.get("RENEW_STAGGER_HOURS") or str(RENEW_EVERY_HOURS / 2))
+
+# Backoff after a FAILED acquisition. A slot with no credential at all would otherwise be retried
+# on every build — at a 4h build interval that is 6 signup attempts a day against a provider whose
+# goodwill this depends on. A failure is usually provider-side (a queued task that never completes,
+# or a rate limit), and hammering it is exactly how the free-trial route gets withdrawn. Waiting is
+# cheap: the other slot keeps serving in the meantime.
+ACQUIRE_RETRY_HOURS = float(os.environ.get("ACQUIRE_RETRY_HOURS") or "12")
 
 # The build records the credential it settled on here so the next run can age it. Absent on the
 # first run (bootstrap from repository secrets), which reads as UNKNOWN age — never as fresh.
@@ -164,6 +177,20 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 def log(msg: str = "") -> None:
     print(msg, flush=True)
+
+
+def mask(*values: str) -> None:
+    """Register values with Actions' log masker.
+
+    Acquired credentials are NOT repository secrets, and GitHub only masks what it was given as a
+    secret — so without this an auto-renewed account appears in plain text in every later step's
+    `env:` dump, which is readable by anyone with Actions access. Observed happening.
+    """
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    for value in values:
+        if value and len(value) > 3:
+            print(f"::add-mask::{value}", flush=True)
 
 
 def emit(**kw) -> None:
@@ -280,6 +307,25 @@ def credential_age_hours() -> float | None:
         return None
 
 
+def hours_since_last_attempt() -> float | None:
+    """Hours since this slot's last acquisition attempt, or None if never attempted.
+
+    None means "no record of an attempt", which must NOT be read as "attempted long ago" — the
+    backoff only suppresses a signup when it can prove a recent failure.
+    """
+    try:
+        stamp = slot_state().get("last_attempt_at")
+        if not stamp:
+            return None
+        when = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        hours = (dt.datetime.now(dt.timezone.utc) - when).total_seconds() / 3600
+        return round(hours, 2) if hours >= 0 else None
+    except Exception:
+        return None
+
+
 def current_credential_status() -> tuple[str | None, str, float | None]:
     """Inspect the credential already in the environment (PROVIDER_*).
 
@@ -385,7 +431,18 @@ def main() -> int:
             reasons.append(f"panel={panel}, hours_left={hours}")
         if due:
             reasons.append(f"age {age}h has reached the {cadence}h cadence")
-        log(f"  slot {SLOT}: renewal due ({'; '.join(reasons)}) — acquiring a fresh trial")
+        log(f"  slot {SLOT}: renewal due ({'; '.join(reasons)})")
+
+        # Respect the backoff before touching the provider's signup endpoint.
+        waited = hours_since_last_attempt()
+        last = slot_state().get("last_status") or ""
+        if last and last not in ("ok", "reused") and waited is not None \
+                and waited < ACQUIRE_RETRY_HOURS:
+            log(f"  slot {SLOT}: the last attempt failed ({last}) {waited}h ago — backing off "
+                f"until {ACQUIRE_RETRY_HOURS}h have passed. NO signup made.")
+            emit(status="backoff", slot=SLOT, reason=f"last_attempt_{last}_{waited}h_ago")
+            return 0
+        log(f"  slot {SLOT}: acquiring a fresh trial")
 
     email = os.environ.get("TRIAL_EMAIL") or mint_alias()
     log(f"=== acquiring a provider trial via API (slot {SLOT}) ===")
@@ -416,6 +473,8 @@ def main() -> int:
         log("  FAIL: task did not complete with credentials")
         emit(status="failed", slot=SLOT, reason="no_credentials_from_task")
         return 1
+    # Mask before anything else can echo them into a log.
+    mask(user, pwd)
     log(f"  credentials issued: username={user}")
 
     panel, exp = verify_credential(user, pwd)

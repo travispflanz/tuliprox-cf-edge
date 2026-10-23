@@ -62,9 +62,24 @@ def load() -> dict:
     return {}
 
 
+def mask(*values: str) -> None:
+    """Register values with Actions' log masker.
+
+    A credential restored from the state file is NOT a repository secret, and GitHub masks only
+    what it was given as a secret — so without this the account appears in plain text in every
+    later step's `env:` dump, readable by anyone with Actions access. Observed happening.
+    """
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    for value in values:
+        if value and len(value) > 3:
+            print(f"::add-mask::{value}", flush=True)
+
+
 def env_lines(slot: int, cred: dict) -> list[str]:
     sfx = suffix(slot)
     out = []
+    mask(cred.get("user", ""), cred.get("pass", ""))
     for field in FIELDS:
         value = cred.get(field.lower(), "")
         out.append(f"PROVIDER{sfx}_{field}={value}")
@@ -131,9 +146,18 @@ def cmd_record(args: argparse.Namespace) -> int:
 
         if not all(cred.values()):
             # Keep any previous record rather than dropping it: a transient gap must not erase a
-            # credential the next build could still have used.
-            if prev:
-                out_state[str(slot)] = prev
+            # credential the next build could still have used. Still stamp the attempt, because
+            # that stamp is what the acquisition backoff reads — without it, a slot that cannot be
+            # acquired would be retried on EVERY build, which is precisely the signup churn the
+            # whole design exists to avoid.
+            entry = dict(prev)
+            if status:
+                entry["last_status"] = status
+                entry["last_attempt_at"] = now_stamp()
+            if entry:
+                out_state[str(slot)] = entry
+                print(f"slot {slot}: no credential in force (status {status or '?'}) "
+                      f"— attempt recorded for backoff")
             continue
 
         unchanged = prev.get("user") == cred["user"] and prev.get("url") == cred["url"]
@@ -154,6 +178,8 @@ def cmd_record(args: argparse.Namespace) -> int:
             "expires_at": expires,
             "generation": generation,
             "source": status,
+            "last_status": status or prev.get("last_status", ""),
+            "last_attempt_at": now_stamp() if status else prev.get("last_attempt_at", ""),
         }
         if status in ("ok", "reused"):
             healthy.append(slot)

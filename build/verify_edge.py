@@ -207,12 +207,12 @@ if streams:
         check("the per-slot health summary is published", bool(slots), f"body={body[:120]!r}")
         if slots:
             healthy = [s for s in slots if s.get("healthy")]
-            check("every configured slot is healthy",
-                  len(healthy) == len(slots),
-                  "unhealthy: " + ", ".join(str(s.get("slot")) for s in slots
-                                            if not s.get("healthy")))
-            check("two slots are configured (two simultaneous viewers)",
-                  len(slots) >= 2, f"only {len(slots)} slot(s) — capacity is {len(slots)} viewer")
+            # Phrase the detail as state, not as a complaint: check() prints it on PASS too.
+            dead = ", ".join(str(s.get("slot")) for s in slots if not s.get("healthy"))
+            check("every configured slot is healthy", len(healthy) == len(slots),
+                  f"{len(healthy)}/{len(slots)} healthy" + (f", dead: {dead}" if dead else ""))
+            check("two slots are configured (two simultaneous viewers)", len(slots) >= 2,
+                  f"{len(slots)} slot(s) = {len(slots)} simultaneous viewer(s)")
             # Each slot is a separate trial, so a shared expiry means they were acquired together
             # and will DIE together — the staggering exists precisely to prevent that.
             stamps = {str(s.get("expires_at") or "") for s in slots if s.get("expires_at")}

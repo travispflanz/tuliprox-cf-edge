@@ -36,6 +36,13 @@ def check(name, ok, detail=""):
     return ok
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Stop urllib from following a 302, so the edge's own response headers stay observable."""
+
+    def redirect_request(self, *a, **k):
+        return None
+
+
 def req(path, timeout=90, method="GET"):
     url = path if path.startswith("http") else BASE + path
     r = urllib.request.Request(url, method=method, headers={"User-Agent": "verify-edge"})
@@ -166,10 +173,6 @@ if streams:
     # Report HOW the edge delivered it: a proxied body (credentials fully hidden) or a 302 to
     # the provider because our egress is refused (common for datacenter/Cloudflare IPs).
     if got is not None:
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *a, **k):
-                return None
-
         opener = urllib.request.build_opener(NoRedirect)
         try:
             r = urllib.request.Request(f"{BASE}/live/{CU}/{CP}/{got[0]}.ts",
@@ -187,6 +190,58 @@ if streams:
                   f"http {e.code} mode={mode}")
         except Exception as e:
             check("stream delivery mode is reported", False, f"{e}")
+
+    # ---------------------------------------------------------------- credential slots
+    # Capacity is invisible from a single client: the catalogue loads identically whether one
+    # account or two are live, so a dead slot silently halves how many people can watch with
+    # nothing in the playlist to show it. These assertions are the only live signal.
+    print("\n  -- credential slots --")
+    code, body, _ = req(f"/_data/slots.json?username={CU}&password={CP}", timeout=30)
+    doc: dict = {}
+    if code == 200:
+        try:
+            doc = json.loads(body)
+            slots = doc.get("slots") or []
+        except Exception:
+            slots = []
+        check("the per-slot health summary is published", bool(slots), f"body={body[:120]!r}")
+        if slots:
+            healthy = [s for s in slots if s.get("healthy")]
+            check("every configured slot is healthy",
+                  len(healthy) == len(slots),
+                  "unhealthy: " + ", ".join(str(s.get("slot")) for s in slots
+                                            if not s.get("healthy")))
+            check("two slots are configured (two simultaneous viewers)",
+                  len(slots) >= 2, f"only {len(slots)} slot(s) — capacity is {len(slots)} viewer")
+            # Each slot is a separate trial, so a shared expiry means they were acquired together
+            # and will DIE together — the staggering exists precisely to prevent that.
+            stamps = {str(s.get("expires_at") or "") for s in slots if s.get("expires_at")}
+            check("the slots do not expire at the same moment",
+                  len(stamps) == len(slots), f"expiries={sorted(stamps)}")
+            # The summary must never carry a credential: it is served to any authenticated client.
+            blob = json.dumps(doc)
+            check("the summary leaks no credential",
+                  not any(k in blob for k in ("pass", "user", "url")), blob[:140])
+    else:
+        check("the per-slot health summary is published", False, f"http {code}")
+
+    if got is not None:
+        slot_seen = []
+        for _ in range(3):
+            try:
+                r = urllib.request.Request(f"{BASE}/live/{CU}/{CP}/{got[0]}.ts",
+                                           headers={"User-Agent": "VLC/3.0.20"})
+                with urllib.request.build_opener(NoRedirect).open(r, timeout=35) as resp:
+                    slot_seen.append(resp.headers.get("X-Stream-Slot", ""))
+            except urllib.error.HTTPError as e:
+                slot_seen.append(e.headers.get("X-Stream-Slot", "") if e.headers else "")
+            except Exception:
+                slot_seen.append("")
+        check("the serving slot is reported", any(slot_seen), f"headers={slot_seen}")
+        # Stability is the whole design: a slot chosen per REQUEST would scatter one player across
+        # both accounts, occupy both max_connections=1 slots, and lock out the second viewer.
+        check("the same viewer is served by a STABLE slot",
+              len(set(filter(None, slot_seen))) <= 1, f"slots seen={slot_seen}")
 
     sid_probe = got[0] if got else candidates[0]
     for path, want, label in [

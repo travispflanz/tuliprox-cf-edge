@@ -35,6 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Lets the first step read repository variables so it can mask them before anything
+      # else prints them. Without it the masking silently no-ops and the step says so.
+      actions: read
     steps:
       # Mask the credentials BEFORE any other step can echo them.
       #
@@ -43,21 +46,36 @@ jobs:
       # would appear verbatim in every later step's `env:` dump — which is exactly how a provider
       # password leaked into a run log once already. Masking is independent of the store, so the
       # readability we wanted costs nothing in log hygiene.
+      # The values are FETCHED AT RUNTIME, never interpolated into this file.
+      #
+      # Both obvious approaches leak: an `env:` block is printed before the step's script runs
+      # (so the masking cannot have happened yet), and `${{ vars.X }}` written inline is echoed
+      # with expressions already expanded in the "Run ..." group. Either way the value lands in
+      # the log in plaintext — which is precisely what happened on the first attempt here.
+      # Reading them from the API keeps them out of both places.
       - name: Mask credentials in the log
         env:
-          V1: ${{ vars.PROVIDER_PASS }}
-          V2: ${{ vars.PROVIDER_USER }}
-          V3: ${{ vars.PROVIDER_2_PASS }}
-          V4: ${{ vars.PROVIDER_2_USER }}
-          V5: ${{ vars.CLIENT_PASS }}
-          V6: ${{ vars.CLIENT_2_PASS }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          for v in V1 V2 V3 V4 V5 V6; do
-            val="${!v}"
-            # Skip trivially short values: masking those would redact unrelated log text.
-            if [ -n "$val" ] && [ "${#val}" -gt 3 ]; then echo "::add-mask::$val"; fi
+          set -uo pipefail
+          masked=0
+          for name in CLIENT_PASS CLIENT_2_PASS CLIENT_USER CLIENT_2_USER \
+                      PROVIDER_PASS PROVIDER_USER PROVIDER_URL \
+                      PROVIDER_2_PASS PROVIDER_2_USER PROVIDER_2_URL; do
+            val="$(gh api "repos/${GITHUB_REPOSITORY}/actions/variables/${name}" \
+                     --jq .value 2>/dev/null || true)"
+            # Only mask values long enough to be a credential: registering a short string would
+            # redact unrelated log text and make the build unreadable.
+            if [ -n "$val" ] && [ "${#val}" -gt 7 ]; then
+              echo "::add-mask::$val"
+              masked=$((masked + 1))
+            fi
           done
-          echo "masked the credential values that are stored as variables"
+          echo "masked $masked credential value(s) held as repository variables"
+          if [ "$masked" -eq 0 ]; then
+            echo "::warning::could not read any repository variable — values stored as VARIABLES" \
+                 "will appear in plaintext in this log. Keep passwords as SECRETS if that matters."
+          fi
 
       # Pinned to the current majors: v4/v3 still target Node 20, which GitHub is already
       # force-running on Node 24 and will eventually retire (deprecation warning in every run).

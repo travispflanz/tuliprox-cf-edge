@@ -154,6 +154,35 @@ def offline() -> None:
     else:
         record("source.yml filter and template.yml agree", SKIP, "no interpreter with PyYAML found")
 
+    print("\n=== offline: local-dev template covers the runtime ===")
+    # `.dev.vars.example` is the only instruction for setting up local dev, and it drifts silently:
+    # the edge gains a binding, the template does not mention it, and the next person's local edge
+    # behaves unlike production with nothing to indicate why. This happened — the template still
+    # described a single provider account long after slot 2, STREAM_MODE and the health hint
+    # existed, so a local run could not exercise the dual-credential path at all. (It is also why
+    # the old `.env.example`, stale in exactly this way, was deleted outright.)
+    template = (REPO / ".dev.vars.example").read_text(encoding="utf-8")
+    fn_src = "\n".join(p.read_text(encoding="utf-8")
+                       for p in sorted((REPO / "functions").rglob("*.js")))
+    # Literal reads (env.FOO) plus dynamic ones (env[`UPSTREAM${suffix}_URL`]), normalising the
+    # interpolation away so the slot-1 name is what gets required.
+    names = set(re.findall(r"\benv\.([A-Z][A-Z0-9_]+)", fn_src))
+    for raw in re.findall(r"\benv\[`([^`]+)`\]", fn_src):
+        names.add(re.sub(r"\$\{[^}]*\}", "", raw))
+    # ASSETS is a Pages binding declared in the project config, not a value a human ever types.
+    names.discard("ASSETS")
+    undocumented = sorted(n for n in names if n not in template)
+    record(f".dev.vars.example documents every binding the edge reads ({len(names)})",
+           FAIL if undocumented else PASS, f"missing: {', '.join(undocumented)}")
+    # Slot 2 is what makes two viewers possible; a template omitting it quietly teaches single-slot.
+    slot2 = [n for n in ("UPSTREAM_2_URL", "UPSTREAM_2_USER", "UPSTREAM_2_PASS")
+             if n not in template]
+    record("the template shows the optional second provider slot",
+           FAIL if slot2 else PASS, f"missing: {', '.join(slot2)}")
+    record("the template carries no real-looking credential",
+           PASS if "provider.example.com" in template else FAIL,
+           "expected placeholder host provider.example.com")
+
     print("\n=== offline: documentation integrity ===")
     # Deleting a file and leaving a reference to it behind is invisible until a human follows the
     # link. Both of these fired for real when docs/ was folded into the README.

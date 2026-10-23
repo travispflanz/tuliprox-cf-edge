@@ -3,10 +3,35 @@
 #
 # CLIENT_*   — what your player logs in with (you choose these)
 # UPSTREAM_* — the IPTV provider's credentials (secrets; never committed, never baked into dist)
+#
+# In production none of these are set by hand: every build syncs them to the
+# Pages project after deploying.
 
 CLIENT_USER="edgeUser123"
 CLIENT_PASS="edgePass456"
 
+# --- provider slot 1 (required) ----------------------------------------------
 UPSTREAM_URL="http://provider.example.com"
 UPSTREAM_USER="providerUser"
 UPSTREAM_PASS="providerPass"
+
+# --- provider slot 2 (optional) ----------------------------------------------
+# A SECOND account at the SAME provider. Each trial allows one connection
+# (max_connections=1), so the second slot is what makes two simultaneous
+# viewers possible and gives the edge a spare account to fail over to. Leave
+# these blank to run single-slot — nothing else needs to change.
+UPSTREAM_2_URL="http://provider.example.com"
+UPSTREAM_2_USER="providerUser2"
+UPSTREAM_2_PASS="providerPass2"
+
+# Which slots the last build verified as live, e.g. "1,2". The edge cannot work
+# this out for itself: the provider refuses our egress, so streams leave as
+# redirects whose outcome the edge never observes. Empty means "try them all",
+# the deliberate fail-open default — a stale hint must never strand traffic
+# that could have been served.
+UPSTREAM_HEALTHY_SLOTS=""
+
+# proxy (default) = attempt an edge fetch, fall back to a redirect if refused.
+# redirect        = skip the doomed fetch entirely; correct for a provider that
+#                   blocks Cloudflare's egress, which is the case here.
+STREAM_MODE="proxy"

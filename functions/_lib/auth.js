@@ -63,8 +63,8 @@ export async function isAuthorized(request, env) {
  * resolves under either account, which means any channel can be served by any slot. That is the
  * fact the whole feature rests on.
  *
- * What it buys: each trial allows `max_connections=1`, so one slot means one viewer at a time.
- * Two slots mean two simultaneous viewers, plus a spare account to fall back to.
+ * What it buys: each trial allows `max_connections=1`, so one slot serves one viewer. Two slots
+ * serve two viewers simultaneously, and either can cover for the other.
  */
 export const SLOT_NUMBERS = [1, 2];
 

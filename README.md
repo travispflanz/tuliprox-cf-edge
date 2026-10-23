@@ -116,7 +116,7 @@ An anonymous visitor to that same URL correctly gets `401`.
 
 ### What the monitor checks
 
-1. **The whole edge** — reuses `build/verify_edge.py`, the same 27 assertions that gate every deploy:
+1. **The whole edge** — reuses `build/verify_edge.py`, the same live assertions that gate every deploy:
    auth on every endpoint, catalogue size, Xtream field completeness, no provider host leaked into
    the playlist, EPG integrity, and a real channel returning MPEG-TS bytes.
 2. **The provider account** — `auth`, `status`, expiry. This matters because a lapsed account still
@@ -371,7 +371,7 @@ Each run of **Build & Deploy Tuliprox Xtream Edge**:
     the next build's cadence calculation
 13. **Syncs the Pages environment** from the credential that built this deploy
 14. **Deploys** to Cloudflare Pages
-15. **Smoke-tests the live edge** with the same 27 assertions the monitor uses
+15. **Smoke-tests the live edge** with the same assertion set the monitor uses
 
 ## 2.4 Credential slots
 
@@ -485,7 +485,8 @@ reintroduce bugs that are painful to diagnose.
    so `working_dir` silently resolves next to the binary instead of the repo.
 10. **Never probe Cloudflare with bare `python-urllib`.** Its default User-Agent trips a `403`
     (error code 1010) *before* auth, which looks exactly like a real outage. Always send a real UA.
-11. **Trial accounts are `max_connections=1`.** One viewer at a time.
+11. **Trial accounts are `max_connections=1`.** Concurrency therefore comes from holding several
+    accounts, not from anything the edge can do with one — see [§2.4](#24-credential-slots).
 12. **Individual channels are unreliable** — real IPTV has dead channels. Probe several and accept
     the first success; never assert on one hardcoded channel id.
 
@@ -493,7 +494,7 @@ reintroduce bugs that are painful to diagnose.
 
 ```bash
 make test        # offline: no network, no credentials, no provider contact. Gates every build.
-make test-live   # the above, plus 27 assertions against the deployed production edge
+make test-live   # the above, plus the live assertions against the deployed production edge
 ```
 
 `build/run_tests.py` is the single entrypoint and **CI runs exactly it**, so a local run and a build
@@ -502,7 +503,7 @@ and a **skip** is printed loudly so a missing optional tool can never pass itsel
 
 | Check | Why it exists |
 |---|---|
-| `verify_renewal_policy.py` | the 24h-cadence / 12h-floor decision matrix, boundaries, unknown age, and that no case can reach the signup path |
+| `verify_renewal_policy.py` | the cadence / floor / stagger decision matrix, boundaries, unknown age, the post-failure backoff, and that no case can reach the signup path. Cases are expressed *relative* to the configured thresholds, so tuning one can't silently invalidate its own test |
 | `verify_filter_config.py` | `source.yml`'s `filter:` and `template.yml` agree — no undefined reference, no orphaned template that silently does nothing, every regex compiles |
 | `verify_stream_slots.mjs` | the dual-credential stream path with `fetch` stubbed: per-viewer slot stability, spread across slots, failover, the 403 short-circuit, and that auth still gates everything |
 | `verify_credential_persistence.py` | drives `credential_state.py` directly: slot isolation, the preserved-`acquired_at` invariant, generation counting, fail-open health, the legacy upgrade path, the backoff stamp, and Actions log masking |
@@ -510,6 +511,7 @@ and a **skip** is printed loudly so a missing optional tool can never pass itsel
 | `py_compile` | Python syntax across `build/` |
 | `node --check` | JS syntax — via a `.mjs` copy, since `node --check` parses a `.js` file as CommonJS and would wrongly reject these ES modules |
 | workflows parse | a broken workflow can't be caught by CI, because CI is the thing that breaks |
+| local-dev template | `.dev.vars.example` documents every binding the edge actually reads, including the optional second slot — it had silently fallen a whole feature behind |
 | documentation integrity | no reference to a deleted file, and no plaintext credential in tracked docs |
 | secret hygiene | `.cred/`, `.dev.vars`, `.env` are untracked and unstageable |
 

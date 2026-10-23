@@ -70,9 +70,11 @@ def dev_vars() -> dict[str, str]:
 # --------------------------------------------------------------------------- offline group
 def offline() -> None:
     print("\n=== offline: behaviour harnesses ===")
-    # These two encode the rules that fail INVISIBLY in both directions — churning free trials at
-    # the provider, or letting the credential lapse while the catalogue keeps serving.
-    for script in ("build/verify_renewal_policy.py", "build/verify_credential_persistence.py"):
+    # These encode the rules that fail INVISIBLY in both directions — churning free trials at the
+    # provider, letting a credential lapse while the catalogue keeps serving, or alerting (or not)
+    # on lost viewing capacity that no client-side probe can see.
+    for script in ("build/verify_renewal_policy.py", "build/verify_credential_persistence.py",
+                   "build/verify_slot_health.py"):
         proc = run([sys.executable, script])
         summary = next((ln for ln in proc.stdout.splitlines() if "checks passed" in ln), "")
         # Surface the harness's OWN failure lines. Reporting only the count forces whoever sees a

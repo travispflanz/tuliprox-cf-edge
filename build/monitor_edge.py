@@ -32,6 +32,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from slot_health import judge_slots  # noqa: E402
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 VERIFIER = REPO_ROOT / "build" / "verify_edge.py"
 
@@ -177,30 +180,10 @@ else:
 # without touching the catalogue at all — it would silently halve viewing capacity with nothing to
 # notice it — so the build publishes a redacted per-slot summary and it is judged here.
 code, slots_doc = http_json(f"/_data/slots.json?username={CU}&password={CP}")
-if code == 200 and isinstance(slots_doc, dict) and isinstance(slots_doc.get("slots"), list):
-    entries = slots_doc["slots"]
-    unhealthy = [s for s in entries if not s.get("healthy")]
-    if entries and len(unhealthy) == len(entries):
-        problems.append(
-            f"EVERY provider slot is unhealthy ({len(entries)} configured) — no viewer can stream. "
-            f"Re-run the build; if it persists, dispatch it with force_trial."
-        )
-    elif unhealthy:
-        warnings.append(
-            f"provider slot(s) {', '.join(str(s.get('slot')) for s in unhealthy)} unhealthy — "
-            f"capacity is reduced to {len(entries) - len(unhealthy)} of {len(entries)} "
-            f"simultaneous viewer(s). The next build should replace them."
-        )
-    for entry in entries:
-        exp = str(entry.get("expires_at") or "") or "unknown"
-        notes.append(f"slot {entry.get('slot')}: "
-                     f"{'healthy' if entry.get('healthy') else 'UNHEALTHY'}, expires {exp}, "
-                     f"generation {entry.get('generation')}")
-elif code == 200:
-    warnings.append("the slot summary is malformed — per-slot health cannot be judged")
-else:
-    # Not fatal: a deploy from before slot support simply has no summary to read.
-    notes.append(f"no per-slot summary published (http {code}) — judging slot 1 only")
+slot_problems, slot_warnings, slot_notes = judge_slots(code, slots_doc)
+problems += slot_problems
+warnings += slot_warnings
+notes += slot_notes
 
 # ---------------------------------------------------------------- 2b. pipeline freshness
 code, meta = http_json(f"/_data/meta.json?username={CU}&password={CP}")

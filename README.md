@@ -318,6 +318,7 @@ config/
 build/
   acquire_trial.py            per-slot credential renewal (reuse vs acquire)
   credential_state.py         seed/record credential state across builds
+  slot_health.py              per-slot watchdog verdicts (pure, importable)
   make_xtream.mjs             m3u + cat_live.json -> static Xtream indexes
   probe_upstream.mjs          provider account health -> dist/_data/upstream.json
   monitor_edge.py             the cloud watchdog's logic
@@ -327,6 +328,7 @@ build/
   verify_credential_persistence.py   credential-age persistence (offline)
   verify_filter_config.py     source.yml <-> template.yml agreement (offline)
   verify_stream_slots.mjs     dual-credential stream routing, fetch stubbed (offline)
+  verify_slot_health.py       watchdog slot verdicts (offline)
 functions/
   _middleware.js              runs on EVERY request, including static-asset hits — the auth gate
   _lib/auth.js                client credential checking
@@ -504,6 +506,7 @@ and a **skip** is printed loudly so a missing optional tool can never pass itsel
 | `verify_filter_config.py` | `source.yml`'s `filter:` and `template.yml` agree — no undefined reference, no orphaned template that silently does nothing, every regex compiles |
 | `verify_stream_slots.mjs` | the dual-credential stream path with `fetch` stubbed: per-viewer slot stability, spread across slots, failover, the 403 short-circuit, and that auth still gates everything |
 | `verify_credential_persistence.py` | drives `credential_state.py` directly: slot isolation, the preserved-`acquired_at` invariant, generation counting, fail-open health, the legacy upgrade path, the backoff stamp, and Actions log masking |
+| `verify_slot_health.py` | the watchdog's severity split — one dead slot warns, *every* slot dead alerts. Unprovable live without killing the real accounts |
 | `py_compile` | Python syntax across `build/` |
 | `node --check` | JS syntax — via a `.mjs` copy, since `node --check` parses a `.js` file as CommonJS and would wrongly reject these ES modules |
 | workflows parse | a broken workflow can't be caught by CI, because CI is the thing that breaks |

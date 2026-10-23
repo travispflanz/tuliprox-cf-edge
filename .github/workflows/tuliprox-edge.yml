@@ -2,10 +2,12 @@ name: Build & Deploy Tuliprox Xtream Edge
 
 on:
   schedule:
-    # Every 4 hours. A slot renews once RENEW_WHEN_HOURS_LEFT (12h) or less of life remains, which
-    # is the ONLY trigger — there is no separate age cadence to fall out of step with it. The
-    # threshold is the window a build must land in, so keep it above the real interval: this cron is
-    # best-effort (gaps past 10h have been measured), not a guarantee.
+    # Every 4 hours. A slot renews once 6 hours or less of life remain, so the check interval (4h)
+    # is SHORTER than the margin (6h) and a credential is always inspected with life still in hand.
+    #
+    # The whole policy rests on this interval being honoured. GitHub's cron is best-effort and has
+    # been measured running >10h late on this repo, which erodes exactly this guarantee — see the
+    # staleness alert in edge-monitor.yml, which is what reports it.
     - cron: "0 */4 * * *"
   workflow_dispatch:
     inputs:
@@ -191,8 +193,7 @@ jobs:
         continue-on-error: true
         env:
           TRIAL_EMAIL_BASE: ${{ vars.TRIAL_EMAIL_BASE || 'taskgobbler' }}
-          RENEW_WHEN_HOURS_LEFT: ${{ vars.RENEW_WHEN_HOURS_LEFT || '12' }}
-          RENEW_MAX_AGE_HOURS: ${{ vars.RENEW_MAX_AGE_HOURS || '24' }}
+          RENEW_WHEN_HOURS_LEFT: ${{ vars.RENEW_WHEN_HOURS_LEFT || '6' }}
           CRED_FILE: .cred/provider.json
         run: |
           set -euo pipefail
@@ -225,9 +226,7 @@ jobs:
         continue-on-error: true
         env:
           TRIAL_EMAIL_BASE: ${{ vars.TRIAL_EMAIL_BASE || 'taskgobbler' }}
-          RENEW_WHEN_HOURS_LEFT: ${{ vars.RENEW_WHEN_HOURS_LEFT || '12' }}
-          RENEW_MAX_AGE_HOURS: ${{ vars.RENEW_MAX_AGE_HOURS || '24' }}
-          RENEW_STAGGER_HOURS: ${{ vars.RENEW_STAGGER_HOURS || '12' }}
+          RENEW_WHEN_HOURS_LEFT: ${{ vars.RENEW_WHEN_HOURS_LEFT || '6' }}
           CRED_FILE: .cred/provider.json
         run: python3 build/acquire_trial.py --if-needed --slot 2
 

@@ -43,32 +43,31 @@ CREDENTIAL SLOTS
 
 WHEN A RENEWAL IS DUE (--if-needed)
 
-  There is ONE question: how much LIFE does the credential in force have left?
+  ONE rule, ONE number:
 
-  1. RUNWAY — renew once RENEW_WHEN_HOURS_LEFT (default 12) or less of life remains. Trials here
-     last ~36h, so a 12h runway replaces a credential with a quarter of its life still in hand and
-     holds the signup rate near 1/day per slot. That restraint is the point: request churn is what
-     risks the provider reading this as automated abuse.
+      the build runs every 4 hours and renews a credential once 6 hours or less of life remain.
 
-     There is deliberately NO separate age cadence. An earlier version had both, and on a ~36h trial
-     the 24h cadence always fired first (at 12h left) — so the "6h floor" could never be reached on
-     a healthy credential. Two rules that LOOK like belt-and-braces but behave as one is worse than
-     one rule, because it hides which number actually matters. Watching life remaining instead of
-     wall-clock age also adapts to whatever trial length the provider actually issues.
+  That is the entire policy. Note that the check interval (4h) is SHORTER than the margin (6h),
+  which is what guarantees a credential is always inspected while it still has life in hand, so the
+  replacement is obtained before the old account dies.
 
-     The threshold IS the window in which a build must land: renewing at N hours left means some
-     build has to occur during the last N hours. It must exceed the REAL build interval, not the
-     nominal one — see RENEW_WHEN_HOURS_LEFT below for why it is 12 and not 6.
+  The trial length is deliberately NOT an input anywhere. It is set by the provider's free-trial
+  plan (36h today) and can change without notice, so no rule may depend on it. Judging remaining
+  life, which the panel reports directly, is therefore valid for any trial length.
 
-  2. STAGGER — a slot other than 1 adds RENEW_STAGGER_HOURS (default 12) to its runway on its
-     FIRST renewal only. Without this, slots bootstrapped together would renew together and expire
-     together, so one failed cycle would remove ALL capacity at once — the very outage the extra
-     slot exists to prevent. After its first renewal a slot is out of phase and rides the plain
-     runway.
+  A slot other than 1 renews one whole margin EARLIER on its first renewal, so slots bootstrapped
+  together stop expiring together — a single failed cycle then cannot remove ALL capacity at once,
+  which is the outage the second slot exists to prevent. Afterwards it rides the plain margin.
 
-  3. UNREADABLE EXPIRY — a fallback, not a co-equal rule. When the panel reports no expiry at all,
-     "life remaining" cannot be evaluated and the age is used against RENEW_MAX_AGE_HOURS instead.
-     The age is read from the state file the build persists between runs (CRED_FILE).
+  There is deliberately NO acquisition backoff. Attempts are self-limiting already: a 4h check
+  against a 6h margin allows only a couple of attempts per trial, so the margin itself bounds the
+  signup rate. A separate backoff added nothing and actively HURT — it suppressed the retry after a
+  failed signup, so a credential was left to die while a timer ran down instead of being retried on
+  the very next build.
+
+  An expiry the panel does not report counts as FRESH: the account authenticates right now, and
+  re-signing-up would burn a trial for nothing. When it eventually dies the panel stops
+  authenticating, and that is itself the renewal signal — so there is no age arithmetic anywhere.
 
 Env:
   TRIAL_EMAIL        full address to request with (default: a fresh alias, see below)
@@ -77,10 +76,7 @@ Env:
   PROVIDER_SITE      default https://www.weselliptv.com
   PANEL_URLS         comma-separated, default http://kytv.xyz,http://kemotvpromax.xyz
   TRIAL_POLL_TRIES   default 120       TRIAL_POLL_WAIT default 1.5 (seconds)
-  RENEW_WHEN_HOURS_LEFT default 12 — renew at or below this much remaining life (the only trigger)
-  RENEW_STAGGER_HOURS   default 12 — added to a slot>1's runway on its FIRST renewal only
-  RENEW_MAX_AGE_HOURS   default 24 — age cap used ONLY when the panel reports no expiry
-  ACQUIRE_RETRY_HOURS  default 12 — backoff after a FAILED acquisition
+  RENEW_WHEN_HOURS_LEFT default 6 — renew at or below this much remaining life (the only number)
   CRED_FILE          default .cred/provider.json — the renewal age is read from here
   PROVIDER_URL/USER/PASS  the credential in force, inspected by --if-needed
 
@@ -118,21 +114,13 @@ PROXY_PORTS = range(10010, 10040)
 POLL_TRIES = int(os.environ.get("TRIAL_POLL_TRIES") or "120")
 POLL_WAIT = float(os.environ.get("TRIAL_POLL_WAIT") or "1.5")
 
-# THE renewal rule: replace the credential in force once this little LIFE REMAINS. This is the only
-# trigger — there is deliberately no separate age cadence (see the docstring for why two rules that
-# behave as one are worse than one honest rule).
+# THE only number in the renewal policy: renew once this little life remains. The build runs every
+# 4h, and 4 < 6, so a credential is always inspected while it still has life in hand.
 #
-# The threshold doubles as the WINDOW in which a build must land, so it has to exceed the REAL build
-# interval. GitHub's cron is best-effort and gaps of 10.6h have been measured on this repository
-# against a 4h schedule, which is why this is 12 and not 6: 6 is not a tighter margin, it is a
-# renewal that gets stepped clean over, after which the account dies while the catalogue keeps
-# serving. Lower it only alongside a clock you actually trust.
-RENEW_WHEN_HOURS_LEFT = float(os.environ.get("RENEW_WHEN_HOURS_LEFT") or "12")
-
-# Fallback cap, used ONLY when the panel reports no expiry at all, so remaining life cannot be
-# computed. A separate knob on purpose: it answers a different question ("in use too long to
-# trust?") and only because the primary signal is missing.
-RENEW_MAX_AGE_HOURS = float(os.environ.get("RENEW_MAX_AGE_HOURS") or "24")
+# Deliberately NOT derived from the trial length. That is set by the provider's free-trial plan
+# (~36h today) and can change without notice, so nothing here may assume it; the policy works on
+# remaining life, which the panel reports, and therefore holds for any trial length.
+RENEW_WHEN_HOURS_LEFT = float(os.environ.get("RENEW_WHEN_HOURS_LEFT") or "6")
 
 # CREDENTIAL SLOTS
 # Slot 1 is PROVIDER_URL/USER/PASS; slot N>1 is PROVIDER_<N>_*. Several accounts from the SAME
@@ -141,20 +129,13 @@ RENEW_MAX_AGE_HOURS = float(os.environ.get("RENEW_MAX_AGE_HOURS") or "24")
 SLOT = 1
 
 # Keep the slots out of phase. If both were acquired together they would renew together and expire
-# together, so a single failed renewal cycle would take out ALL capacity at once — exactly the
-# outage the second slot exists to prevent. A slot's FIRST renewal therefore widens its runway by
-# this much, so it renews earlier; afterwards it rides the plain runway, permanently offset.
-RENEW_STAGGER_HOURS = float(os.environ.get("RENEW_STAGGER_HOURS") or "12")
+# together, so a single failed cycle would take out ALL capacity at once — exactly the outage the
+# second slot exists to prevent. Expressed as a multiple of the one margin rather than its own
+# threshold, so there is no second number to keep in step with it.
 
-# Backoff after a FAILED acquisition. A slot with no credential at all would otherwise be retried
-# on every build — at a 4h build interval that is 6 signup attempts a day against a provider whose
-# goodwill this depends on. A failure is usually provider-side (a queued task that never completes,
-# or a rate limit), and hammering it is exactly how the free-trial route gets withdrawn. Waiting is
-# cheap: the other slot keeps serving in the meantime.
-ACQUIRE_RETRY_HOURS = float(os.environ.get("ACQUIRE_RETRY_HOURS") or "12")
-
-# The build records the credential it settled on here so the next run can age it. Absent on the
-# first run (bootstrap from repository secrets), which reads as UNKNOWN age — never as fresh.
+# Where the build records the credential it settled on, so the next run can report its age. An
+# absent file means UNKNOWN age (bootstrap from repository secrets). Age is no longer a renewal
+# input — it is kept for the log and for the slot-stagger bookkeeping above.
 CRED_FILE = os.environ.get("CRED_FILE") or ".cred/provider.json"
 
 
@@ -323,25 +304,6 @@ def credential_age_hours() -> float | None:
         return None
 
 
-def hours_since_last_attempt() -> float | None:
-    """Hours since this slot's last acquisition attempt, or None if never attempted.
-
-    None means "no record of an attempt", which must NOT be read as "attempted long ago" — the
-    backoff only suppresses a signup when it can prove a recent failure.
-    """
-    try:
-        stamp = slot_state().get("last_attempt_at")
-        if not stamp:
-            return None
-        when = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=dt.timezone.utc)
-        hours = (dt.datetime.now(dt.timezone.utc) - when).total_seconds() / 3600
-        return round(hours, 2) if hours >= 0 else None
-    except Exception:
-        return None
-
-
 def current_credential_status() -> tuple[str | None, str, float | None]:
     """Inspect the credential already in the environment (PROVIDER_*).
 
@@ -404,22 +366,16 @@ def slot_generation() -> int:
 
 
 def margin_for_slot() -> float:
-    """The remaining-life runway at which THIS slot's renewal falls due.
+    """The remaining-life margin at which THIS slot's renewal falls due = the one number.
 
-    Slot 1 rides the plain runway. Another slot widens it by RENEW_STAGGER_HOURS on its FIRST
-    renewal only, so the slots stop expiring in lockstep; once it has renewed at least once
-    (generation > 0) it is already out of phase and uses the plain runway.
+    A slot other than 1 gets a whole extra margin on its FIRST renewal only: it renews that much
+    earlier, so slots bootstrapped together end up permanently offset and cannot die together.
+    Afterwards it is already out of phase and uses the plain margin. Derived from the margin rather
+    than being a second setting, so the two can never drift apart.
     """
     if SLOT == 1 or slot_generation() > 0:
         return RENEW_WHEN_HOURS_LEFT
-    return RENEW_WHEN_HOURS_LEFT + RENEW_STAGGER_HOURS
-
-
-def max_age_for_slot() -> float:
-    """The fallback age cap for THIS slot, mirroring the stagger (see margin_for_slot)."""
-    if SLOT == 1 or slot_generation() > 0:
-        return RENEW_MAX_AGE_HOURS
-    return RENEW_MAX_AGE_HOURS + RENEW_STAGGER_HOURS
+    return RENEW_WHEN_HOURS_LEFT * SLOT
 
 
 def main() -> int:
@@ -434,27 +390,25 @@ def main() -> int:
             log("  FAIL: --slot needs an integer")
             return 1
 
-    # Deliberately conservative: a healthy credential is REUSED until its renewal is actually due
-    # — see the CADENCE and FLOOR rules at the top of this file. Signing up on every build would
-    # mean several trials/day per slot, and that churn is what risks the provider treating this as
-    # automated abuse and withdrawing the free trial entirely.
+    # Deliberately conservative: a healthy credential is REUSED until it is actually under the
+    # margin (see the rule at the top of this file). Signing up on every build would mean several
+    # trials/day per slot, and that churn is what risks the provider treating this as automated
+    # abuse and withdrawing the free trial entirely. The margin is what bounds the rate.
     if if_needed and not force:
         panel, user, hours = current_credential_status()
         age = credential_age_hours()
         margin = margin_for_slot()
-        max_age = max_age_for_slot()
         usable = bool(panel)
         if hours is None:
-            # No expiry reported, so "life remaining" cannot be evaluated and the age cap is the
-            # only signal left. With no recorded age either there is nothing to go on: adopt what
-            # is configured, because it authenticates RIGHT NOW and renewing instead would burn a
-            # trial on every build if the state file could not persist.
-            due = age is not None and age >= max_age
-            basis = (f"no expiry reported, age "
-                     f"{'unknown' if age is None else f'{age}h'} vs the {max_age}h cap")
+            # The panel reports no expiry, so there is no "life remaining" to judge. Treat it as
+            # FRESH: it authenticates right now, and re-signing-up would burn a trial for nothing.
+            # When it dies the panel stops authenticating, which is itself the renewal signal, so
+            # this needs no age arithmetic and assumes nothing about the trial length.
+            due = False
+            basis = "expiry not reported — treated as fresh"
         else:
             due = hours <= margin
-            basis = f"{hours}h of life left, at or under the {margin}h runway"
+            basis = f"{hours}h of life left, at or under the {margin}h margin"
         if usable and not due:
             shown = "expiry not reported" if hours is None else f"{hours}h left"
             aged = "age unknown (bootstrap)" if age is None else f"age {age}h"
@@ -471,15 +425,6 @@ def main() -> int:
             reasons.append(basis)
         log(f"  slot {SLOT}: renewal due ({'; '.join(reasons)})")
 
-        # Respect the backoff before touching the provider's signup endpoint.
-        waited = hours_since_last_attempt()
-        last = slot_state().get("last_status") or ""
-        if last and last not in ("ok", "reused") and waited is not None \
-                and waited < ACQUIRE_RETRY_HOURS:
-            log(f"  slot {SLOT}: the last attempt failed ({last}) {waited}h ago — backing off "
-                f"until {ACQUIRE_RETRY_HOURS}h have passed. NO signup made.")
-            emit(status="backoff", slot=SLOT, reason=f"last_attempt_{last}_{waited}h_ago")
-            return 0
         log(f"  slot {SLOT}: acquiring a fresh trial")
 
     email = os.environ.get("TRIAL_EMAIL") or mint_alias()

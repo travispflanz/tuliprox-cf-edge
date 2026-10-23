@@ -127,7 +127,7 @@ check("the leak gate covers BOTH provider hosts",
 check("the edge receives the healthy-slot hint", "put UPSTREAM_HEALTHY_SLOTS" in text)
 check("builds run every 4 hours", 'cron: "0 */4 * * *"' in text)
 check("the renewal floor leaves room for another build",
-      "RENEW_WHEN_HOURS_LEFT: ${{ vars.RENEW_WHEN_HOURS_LEFT || '12' }}" in text)
+      "RENEW_WHEN_HOURS_LEFT: ${{ vars.RENEW_WHEN_HOURS_LEFT || '6' }}" in text)
 check(".cred/ is gitignored (it carries live provider credentials)",
       any(ln.strip() == ".cred/" for ln in (REPO / ".gitignore").read_text().splitlines()))
 

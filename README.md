@@ -166,47 +166,43 @@ what would make the provider treat this as automated abuse and withdraw free tri
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `RENEW_WHEN_HOURS_LEFT` | `12` | **the only trigger** — replace the credential once this little life remains |
-| `RENEW_MAX_AGE_HOURS` | `24` | fallback age cap, used **only** when the panel reports no expiry at all |
-| `RENEW_STAGGER_HOURS` | `12` | extra runway a slot other than 1 gets on its *first* renewal |
+| `RENEW_WHEN_HOURS_LEFT` | `6` | **the only number** — renew once this little life remains |
 
-There is **one** rule: how much life is left. An earlier version also had an age cadence, and on a
-~36h trial that cadence always fired first — at 12h left, while the 6h "floor" beside it could only
-have fired at 6h left. So the floor was unreachable dead code that merely *looked* like a second
-safety net, and the pair of numbers hid which one actually mattered. Watching remaining life instead
-of wall-clock age also adapts to whatever trial length the provider really issues, rather than
-assuming one.
+That is the entire policy: **the build checks every 4 hours, and renews once 6 hours or less of life
+remain.** Because the check interval (4h) is *shorter* than the margin (6h), a credential is always
+inspected while it still has life in hand, so the replacement is obtained before the old account
+dies. The unit test pins that relationship by reading the cron straight out of the workflow, so the
+two cannot drift apart.
 
-**The threshold is also the window a build must land in.** Renewing when 12h remain means a build has
-to happen during the last 12 hours of the account's life, so the number must clear the interval this
-pipeline *really* sees — not the nominal one. That is why it is 12 and not 6.
+**The trial length is deliberately not an input anywhere.** It is set by the provider's free-trial
+plan (36 hours today) and can change without notice, so no rule depends on it. Judging *remaining
+life* — which the panel reports directly — stays correct for any trial length.
 
-> ⚠️ **The real margin is 12 hours, and GitHub's cron does not reliably honour the 4-hour target.**
-> Renewal is due at 24h old and the trial dies at ~36h, so a build must land inside that 12h window.
-> GitHub schedules are best-effort — **gaps of 10.6h (build) and 11.7h (monitor) have been measured
-> on this repository**, and the ~06:00 UTC slot is skipped fairly consistently. That has not broken
-> anything yet, but it leaves roughly an hour of margin: one worse gap and the streams fail while
-> the catalogue keeps serving.
+A slot other than 1 renews one whole margin earlier on its **first** renewal only, so slots
+bootstrapped together stop expiring together and one failed cycle cannot remove all capacity at once.
+That offset is *derived* from the margin, so there is no second number to keep in step with it.
+
+**There is no acquisition backoff.** Attempts are self-limiting: a 4h check against a 6h margin
+allows only a couple of attempts per trial, so the margin itself bounds the signup rate near 1/day.
+A backoff added nothing and actively *hurt* — it suppressed the retry after a failed signup, leaving
+a credential to die while a timer ran down instead of being retried on the very next build.
+
+> ⚠️ **The one thing that breaks this: the 4-hour check must actually happen every 4 hours.**
+> The whole guarantee *is* `interval < margin`. GitHub's cron is best-effort — **gaps of 10.6h
+> (build) and 11.7h (monitor) have been measured on this repository**, and the ~06:00 UTC slot is
+> skipped fairly consistently. A gap wider than the margin steps clean over the renewal, after which
+> the account dies while the catalogue keeps serving.
 >
-> This is exactly why `RENEW_WHEN_HOURS_LEFT` is **12**: the threshold has to exceed the delay the
-> pipeline really suffers, or the renewal is stepped clean over. Setting it to 6 on this clock would
-> not tighten the margin, it would *remove* it — a 6h window against a 10.6h gap has nothing to catch.
->
-> A gap long enough to threaten this is reported by the monitor as a **Stale deploy** problem, so the
-> system does tell you. If you want the cadence actually guaranteed rather than merely watched, drive
-> the build from a clock that is not GitHub's — a Cloudflare Cron Trigger calling the workflow's
-> `workflow_dispatch` API. Cloudflare's scheduler is dependable in a way GitHub's is not.
-
-**If a signup fails, it waits 12 hours before trying again** (`ACQUIRE_RETRY_HOURS`). A slot with
-no credential at all counts as "renewal due" on every build, so without this a provider-side
-hiccup would mean a signup attempt every 4 hours — six a day, which is the churn that gets free
-trials withdrawn. The other slot keeps serving while it waits, so there is nothing to lose by
-waiting. Need it sooner? Dispatch the build manually with **force_trial**, which skips the backoff.
+> Note this is a property of the **clock**, not of the rule — so the fix is a better clock, not a
+> bigger number. The monitor reports a **Stale deploy** past 10h, so you are told when it happens.
+> To guarantee the cadence rather than merely watch it, drive the build from a clock that is not
+> GitHub's: a Cloudflare Cron Trigger calling the workflow's `workflow_dispatch` API.
 
 **The two slots are kept out of phase on purpose.** If both were acquired together they would renew
 together and expire together, so one bad renewal cycle would remove *all* capacity at once — the
-very outage the second slot exists to prevent. Slot 2's first renewal is therefore pulled forward to
-`RENEW_STAGGER_HOURS`, after which it rides the normal cadence permanently offset.
+very outage the second slot exists to prevent. Slot 2's first renewal therefore happens one whole
+margin EARLY, after which it rides the normal margin permanently offset. The offset is derived from
+the margin, so it is not a second setting that could drift out of step with it.
 
 Tune any of these as [repository variables](https://github.com/travispflanz/tuliprox-cf-edge/settings/variables/actions).
 
@@ -457,27 +453,31 @@ The serving slot is reported in `X-Stream-Slot` on every stream response.
 
 Renewal asks **one** question, in `build/acquire_trial.py`, evaluated per slot:
 
-- **Runway** — does the credential have `RENEW_WHEN_HOURS_LEFT` (12) or less of life left? This is
-  the only trigger. It is measured from the panel's own reported expiry, so it tracks the trial
-  length actually issued rather than a wall-clock assumption about it.
-- **Stagger** — a slot other than 1 adds `RENEW_STAGGER_HOURS` (12) to its runway on its *first*
-  renewal, so it renews earlier and the slots stop expiring in lockstep. After that rotation it is
-  out of phase and rides the plain runway; `generation` in the state file distinguishes a
-  freshly-bootstrapped slot from one that has already rotated.
-- **Unreadable expiry** — a fallback, not a co-equal rule. When the panel reports no expiry at all,
-  remaining life cannot be computed, so the age is checked against `RENEW_MAX_AGE_HOURS` (24)
-  instead. It is a separate knob because it answers a different question ("in use too long to
-  trust?") and is asked only because the primary signal is missing.
+> Does this credential have `RENEW_WHEN_HOURS_LEFT` (6) or less of life left?
 
-An **unknown age is never treated as fresh.** Assuming fresh is what would skip a renewal forever, so
-a missing or unreadable timestamp falls back to the age cap. The one case that deliberately adopts
-what is configured is when the expiry *and* the age are both unreadable: the credential
-authenticates right now, and renewing instead would burn a trial on every build if the state file
-could not persist.
+That is the whole engine. It is measured from the panel's own reported expiry, so it tracks the trial
+length actually issued rather than a wall-clock assumption about it.
 
-**Age alone never renews anything.** A credential with life left is kept however old it is — that is
-what stops an unexpectedly long trial from being thrown away early, and it is pinned by
-`verify_renewal_policy.py`.
+Three consequences worth stating explicitly, because each one is a rule that is **absent** on
+purpose:
+
+- **Age is not a renewal input.** A credential with life in hand is kept however old it is. That is
+  what stops an unexpectedly long trial from being thrown away early, and it is why nothing needs to
+  know how long a trial lasts.
+- **No timer suppresses a signup.** The margin alone bounds the attempt rate. There is no backoff
+  to get out of step with the margin, and nothing can leave a credential to die while a timer runs.
+- **An unreadable expiry counts as fresh.** If the panel reports no expiry, the account still
+  authenticates right now and re-signing-up would burn a trial for nothing. When it eventually dies
+  the panel stops authenticating — which is itself the renewal signal. No age arithmetic, and so no
+  assumption about the trial length anywhere in the policy.
+
+The only other rule is the **stagger**: a slot other than 1 renews a whole extra margin early on its
+*first* renewal, so slots bootstrapped together end up permanently out of phase. `generation` in the
+state file distinguishes a freshly-bootstrapped slot from one that has already rotated. It is derived
+from the margin rather than configured, so there is exactly one timing number in the policy.
+
+`verify_renewal_policy.py` (26 checks) pins all of the above — including, read directly from the
+workflow, that the build interval is shorter than the margin.
 
 ### Why the credential can't live in a repository secret
 
@@ -608,11 +608,8 @@ always deploy from the repo root.
 |---|---|---|
 | `CLIENT_USER`, `CLIENT_PASS` | — | **your playlist login.** Required. Set with `gh variable set` |
 | `CLIENT_2_USER`, `CLIENT_2_PASS` | unset | second viewer's login, pinned to provider slot 2. Set both or neither |
-| `RENEW_WHEN_HOURS_LEFT` | `12` | renew at or below this much remaining life (the only trigger) |
-| `RENEW_MAX_AGE_HOURS` | `24` | age cap, used only when the panel reports no expiry |
+| `RENEW_WHEN_HOURS_LEFT` | `6` | renew at or below this much remaining life — **the only timing number** |
 | `STALE_HOURS` | `10` | monitor: alert if the newest deploy is older than this |
-| `RENEW_STAGGER_HOURS` | `12` | how far slot 2 is held out of phase with slot 1 |
-| `ACQUIRE_RETRY_HOURS` | `12` | wait this long after a FAILED signup before retrying |
 | `TRIAL_POLL_TRIES` | `120` | status polls (×1.5s) to await the provider's task queue |
 | `TRIAL_EMAIL_BASE` | `taskgobbler` | local part used to mint `+alias` addresses |
 

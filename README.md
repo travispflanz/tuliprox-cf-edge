@@ -137,7 +137,7 @@ An anonymous visitor to that same URL correctly gets `401`.
    the playlist, EPG integrity, and a real channel returning MPEG-TS bytes.
 2. **The provider account** — `auth`, `status`, expiry. This matters because a lapsed account still
    serves the full catalogue while *every stream fails*.
-3. **Deploy freshness** — if the newest build is over 10 hours old, the schedule has stopped.
+3. **Deploy freshness** — if the newest build is over 10 hours old, the schedule has stopped *or is running badly late* (GitHub cron drifts; see [§1.5](#15-the-provider-account--automatic)).
    GitHub silently disables cron in repositories it considers inactive, and this is the only way
    you'd ever find out.
 
@@ -174,6 +174,22 @@ The floor is a net, not the engine: it covers a lost timestamp, a shorter-than-e
 previous renewal that failed. Because builds run every 4 hours and the floor is 6, **a renewal can
 fail once and still be retried while the account is alive** — that relationship is what makes the
 pair of numbers safe, so if you raise the build interval, raise the floor too.
+
+> ⚠️ **The real margin is 12 hours, and GitHub's cron does not reliably honour the 4-hour target.**
+> Renewal is due at 24h old and the trial dies at ~36h, so a build must land inside that 12h window.
+> GitHub schedules are best-effort — **gaps of 10.6h (build) and 11.7h (monitor) have been measured
+> on this repository**, and the ~06:00 UTC slot is skipped fairly consistently. That has not broken
+> anything yet, but it leaves roughly an hour of margin: one worse gap and the streams fail while
+> the catalogue keeps serving.
+>
+> Two ways to buy margin, both tunable without a code change:
+> - Lower `RENEW_EVERY_HOURS` (e.g. `18`) — widens the window to 18h for ~0.3 extra signups/day.
+> - Raise `STALE_HOURS`' counterpart by watching for the **Stale deploy** alert, which fires past 10h.
+>
+> A gap long enough to threaten this is reported by the monitor as a **Stale deploy** problem, so the
+> system does tell you. If you want the cadence actually guaranteed rather than merely watched, drive
+> the build from a clock that is not GitHub's — a Cloudflare Cron Trigger calling the workflow's
+> `workflow_dispatch` API. Cloudflare's scheduler is dependable in a way GitHub's is not.
 
 **If a signup fails, it waits 12 hours before trying again** (`ACQUIRE_RETRY_HOURS`). A slot with
 no credential at all counts as "renewal due" on every build, so without this a provider-side
@@ -273,7 +289,7 @@ embedded in the playlist URLs, so every player must be re-pointed afterwards.
 | **401 Unauthorized** | Wrong client credentials | Use your `CLIENT_*` values, or reset them ([§1.7](#17-change-the-login-your-players-use)) |
 | Playlist loads but **no channels** | Build failed, or deployed empty | Check **Actions** for a red run |
 | **"Edge DOWN"** issue | The verifier is failing | Open the issue → linked run → read the failed step |
-| **Stale deploy** warning | Scheduled builds stopped | Re-run ([§1.4](#14-force-a-rebuild)); GitHub pauses cron in inactive repos |
+| **Stale deploy** warning | Scheduled builds stopped, or cron drifting badly late | Re-run ([§1.4](#14-force-a-rebuild)). GitHub pauses cron in inactive repos, and its schedule is best-effort even when active |
 | Channels **missing** that used to exist | Provider dropped them, or a filter removed them | Review `config/template.yml`, then rebuild |
 | **Changes don't appear** in the player | The player cached the playlist | Reload or re-add the playlist in the player |
 | Only **one device** can watch at a time | A provider slot is unhealthy or was never acquired | The monitor says which. It self-heals on a later build; a failed signup waits 12h, so use **`force_trial`** to retry now |

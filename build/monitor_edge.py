@@ -194,9 +194,13 @@ if code == 200 and isinstance(meta, dict) and meta.get("built_at"):
         age_h = round((now - built_ts) / 3600, 1)
         if age_h > STALE_HOURS:
             problems.append(
-                f"the deploy is STALE: last build was {age_h}h ago ({built_at}), but builds run every "
-                f"6h — the scheduled workflow has probably stopped (GitHub disables schedules in "
-                f"inactive repositories). Re-run it and check the Actions tab."
+                f"the deploy is STALE: last build was {age_h}h ago ({built_at}), but builds are "
+                f"scheduled every 4h. Either the pipeline has stopped (GitHub disables schedules in "
+                f"inactive repositories) or the schedule is merely running late — GitHub's cron is "
+                f"best-effort, and gaps of 10h+ have been measured on this repository. Check the "
+                f"Actions tab; if builds are running but drifting, that is the second cause. The "
+                f"renewal margin is 12h (24h cadence against a 36h trial), so a gap much beyond that "
+                f"takes the streams down while the catalogue still serves."
             )
         else:
             notes.append(

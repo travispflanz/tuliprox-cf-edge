@@ -5,8 +5,8 @@ name: Edge Monitor (cloud watchdog)
 # on real breakage so GitHub's own notification emails fire.
 on:
   schedule:
-    # Offset 30 min from the build (0 */6) so we always judge a FINISHED rebuild, never one mid-flight.
-    - cron: "30 */6 * * *"
+    # Offset 30 min from the build (0 */4) so we always judge a FINISHED rebuild, never one mid-flight.
+    - cron: "30 */4 * * *"
   workflow_dispatch:
     inputs:
       simulate:

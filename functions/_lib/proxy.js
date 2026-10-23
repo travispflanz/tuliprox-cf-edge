@@ -19,7 +19,13 @@
  *   proxy     (default) — try the edge fetch, fall back to a redirect on refusal
  *   redirect            — always redirect (skip the doomed fetch, saves a round trip)
  */
-import { safeEqual, upstreamStream, upstreamConfigured } from './auth.js';
+import {
+  safeEqual,
+  upstreamConfigured,
+  healthySlots,
+  pickSlot,
+  streamUrlFor,
+} from './auth.js';
 import { text, unauthorized, serverError, options } from './respond.js';
 
 const CONTENT_TYPES = {
@@ -30,7 +36,7 @@ const CONTENT_TYPES = {
   avi: 'video/x-msvideo',
 };
 
-function redirectTo(target, reason) {
+function redirectTo(target, reason, slot) {
   return new Response(null, {
     status: 302,
     headers: {
@@ -39,6 +45,7 @@ function redirectTo(target, reason) {
       'Access-Control-Allow-Origin': '*',
       'X-Stream-Mode': 'redirect-fallback',
       'X-Stream-Fallback-Reason': reason,
+      'X-Stream-Slot': String(slot),
     },
   });
 }
@@ -61,37 +68,56 @@ export async function handleStream(context, kind) {
   if (!m) return text('400 Bad stream id', 400);
   const [, id, ext] = m;
 
-  const target = upstreamStream(env, kind, id, ext);
+  // Choose this viewer's provider account, then order the rest behind it as failover candidates.
+  const candidates = healthySlots(env);
+  const chosen = pickSlot(request, candidates);
+  const ordered = [chosen, ...candidates.filter((c) => c.slot !== chosen.slot)];
+  const target = streamUrlFor(chosen, kind, id, ext);
 
   if ((env.STREAM_MODE || 'proxy') === 'redirect') {
-    return redirectTo(target, 'mode=redirect');
+    // The player fetches straight from the provider, so the edge never learns whether it worked
+    // and in-request failover is impossible here. Slot health from the last build is what keeps
+    // a dead account out of this decision — see healthySlots().
+    return redirectTo(target, 'mode=redirect', chosen.slot);
   }
 
   const headers = { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' };
   const range = request.headers.get('Range');
   if (range) headers['Range'] = range;
 
-  let upstream;
-  try {
-    upstream = await fetch(target, { headers, redirect: 'follow' });
-  } catch (err) {
-    // Network-level refusal from our egress — let the player try from its own.
-    return redirectTo(target, `fetch-error:${(err && err.message ? err.message : 'unknown').slice(0, 60)}`);
+  // Try this viewer's account first; on an auth/limit refusal try the other one. A provider
+  // refusal of OUR egress (403) is not credential-specific and would fail identically on every
+  // slot, so that case redirects immediately rather than burning a second pointless round trip.
+  let lastReason = 'no-candidate';
+  let lastTarget = target;
+  for (const cred of ordered) {
+    const url = streamUrlFor(cred, kind, id, ext);
+    lastTarget = url;
+    let upstream;
+    try {
+      upstream = await fetch(url, { headers, redirect: 'follow' });
+    } catch (err) {
+      // Network-level refusal from our egress — let the player try from its own.
+      return redirectTo(url, `fetch-error:${(err && err.message ? err.message : 'unknown').slice(0, 60)}`, cred.slot);
+    }
+
+    if (upstream.ok || upstream.status === 206) {
+      const out = new Headers();
+      out.set('Content-Type', CONTENT_TYPES[ext] || upstream.headers.get('Content-Type') || 'application/octet-stream');
+      out.set('Cache-Control', 'no-store');
+      out.set('Access-Control-Allow-Origin', '*');
+      out.set('X-Stream-Mode', 'proxy');
+      out.set('X-Stream-Slot', String(cred.slot));
+      const ct = upstream.headers.get('Content-Range');
+      if (ct) out.set('Content-Range', ct);
+      const al = upstream.headers.get('Accept-Ranges');
+      if (al) out.set('Accept-Ranges', al);
+      return new Response(upstream.body, { status: upstream.status === 206 ? 206 : 200, headers: out });
+    }
+
+    lastReason = `upstream-${upstream.status}`;
+    if (upstream.status === 403) break;   // egress-level block: every slot would answer the same
   }
 
-  if (!upstream.ok && upstream.status !== 206) {
-    return redirectTo(target, `upstream-${upstream.status}`);
-  }
-
-  const out = new Headers();
-  out.set('Content-Type', CONTENT_TYPES[ext] || upstream.headers.get('Content-Type') || 'application/octet-stream');
-  out.set('Cache-Control', 'no-store');
-  out.set('Access-Control-Allow-Origin', '*');
-  out.set('X-Stream-Mode', 'proxy');
-  const ct = upstream.headers.get('Content-Range');
-  if (ct) out.set('Content-Range', ct);
-  const al = upstream.headers.get('Accept-Ranges');
-  if (al) out.set('Accept-Ranges', al);
-
-  return new Response(upstream.body, { status: upstream.status === 206 ? 206 : 200, headers: out });
+  return redirectTo(lastTarget, lastReason, ordered[ordered.length - 1].slot);
 }

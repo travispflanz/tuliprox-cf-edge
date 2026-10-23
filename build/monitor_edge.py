@@ -35,15 +35,15 @@ import urllib.request
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 VERIFIER = REPO_ROOT / "build" / "verify_edge.py"
 
-# The build renews the provider credential once a day (RENEW_EVERY_HOURS on ~36h trials) and has a
-# 12h safety floor, so the healthy sawtooth never falls below ~6h before a build replaces it. This
-# threshold sits BELOW that floor deliberately: in this system "expires in a few hours" no longer
-# means "a human must rotate something" — it means the AUTOMATED renewal is overdue, which is a real
-# defect. Warning any earlier would fire on the normal cadence and turn into noise.
-WARN_HOURS = float(os.environ.get("WARN_HOURS", "6"))
-# Builds run every 6h, so this much silence means the pipeline itself has stopped — the failure
+# Each slot renews once a day, with a 6h safety floor, and builds run every 4h — so a healthy
+# credential should never be seen below ~6h of life. This threshold sits BELOW that floor
+# deliberately: in this system "expires in a few hours" no longer means "a human must rotate
+# something", it means the AUTOMATED renewal is OVERDUE, which is a real defect. Setting it at or
+# above the floor would fire on every normal cycle and train you to ignore the alert.
+WARN_HOURS = float(os.environ.get("WARN_HOURS", "3"))
+# Builds run every 4h, so this much silence means the pipeline itself has stopped — the failure
 # mode nobody notices, because the last-good deploy keeps serving happily.
-STALE_HOURS = float(os.environ.get("STALE_HOURS", "14"))
+STALE_HOURS = float(os.environ.get("STALE_HOURS", "10"))
 BASE = (os.environ.get("BASE") or "").rstrip("/")
 CU = os.environ.get("CLIENT_USER", "")
 CP = os.environ.get("CLIENT_PASS", "")
@@ -171,6 +171,36 @@ elif hours_left is not None and hours_left < WARN_HOURS:
 else:
     notes.append(f"account: status={status} auth={auth} exp={exp_str()}"
                  + (f" ({hours_left}h left)" if hours_left is not None else ""))
+
+# ------------------------------------------------------------- 2a. every credential slot
+# The account probed above is the one the CATALOGUE was built with (slot 1). A second slot can die
+# without touching the catalogue at all — it would silently halve viewing capacity with nothing to
+# notice it — so the build publishes a redacted per-slot summary and it is judged here.
+code, slots_doc = http_json(f"/_data/slots.json?username={CU}&password={CP}")
+if code == 200 and isinstance(slots_doc, dict) and isinstance(slots_doc.get("slots"), list):
+    entries = slots_doc["slots"]
+    unhealthy = [s for s in entries if not s.get("healthy")]
+    if entries and len(unhealthy) == len(entries):
+        problems.append(
+            f"EVERY provider slot is unhealthy ({len(entries)} configured) — no viewer can stream. "
+            f"Re-run the build; if it persists, dispatch it with force_trial."
+        )
+    elif unhealthy:
+        warnings.append(
+            f"provider slot(s) {', '.join(str(s.get('slot')) for s in unhealthy)} unhealthy — "
+            f"capacity is reduced to {len(entries) - len(unhealthy)} of {len(entries)} "
+            f"simultaneous viewer(s). The next build should replace them."
+        )
+    for entry in entries:
+        exp = str(entry.get("expires_at") or "") or "unknown"
+        notes.append(f"slot {entry.get('slot')}: "
+                     f"{'healthy' if entry.get('healthy') else 'UNHEALTHY'}, expires {exp}, "
+                     f"generation {entry.get('generation')}")
+elif code == 200:
+    warnings.append("the slot summary is malformed — per-slot health cannot be judged")
+else:
+    # Not fatal: a deploy from before slot support simply has no summary to read.
+    notes.append(f"no per-slot summary published (http {code}) — judging slot 1 only")
 
 # ---------------------------------------------------------------- 2b. pipeline freshness
 code, meta = http_json(f"/_data/meta.json?username={CU}&password={CP}")

@@ -2,7 +2,7 @@
 
 A self-hosted IPTV gateway with **no server, no hosting bill, and no machine of your own involved.**
 
-GitHub Actions fetches your provider's channel list every 6 hours, filters and reshapes it, and
+GitHub Actions fetches your provider's channel list every 4 hours, filters and reshapes it, and
 publishes it to Cloudflare Pages, which serves a real **Xtream Codes API** that any IPTV player can
 log into. The build also **renews its own provider trial account**, so there is no recurring manual
 step at all. A second scheduled workflow watches everything and opens a GitHub issue if it breaks.
@@ -36,7 +36,7 @@ copy of whatever the last build produced.
 ```
    YOUR PROVIDER              GITHUB ACTIONS               CLOUDFLARE PAGES           YOUR PLAYER
    source of truth   ──►  fetch → filter → reshape  ──►  static snapshot + API  ──►  TiviMate / VLC
-   (trial account)            every 6 hours                    always on
+   (trial account)            every 4 hours                    always on
 ```
 
 So "updating the playlist" always means **re-running the build**, or changing an input to it. The
@@ -78,15 +78,22 @@ saved — if you've lost them, set new ones ([§1.7](#17-change-the-login-your-p
 > **After any change, refresh the playlist inside your player.** Players cache aggressively, so an
 > update can look like it didn't happen until you reload or re-add the playlist.
 
-**Tested players:** TiviMate, iMPlayer, OTT Navigator, VLC. Only **one viewer at a time** — the
-provider trial permits a single connection (`max_connections=1`).
+**Tested players:** TiviMate, iMPlayer, OTT Navigator, VLC.
+
+**How many people can watch at once?** One per configured provider slot. Each trial account allows
+a single connection (`max_connections=1`), so the edge holds **two** accounts and hands each device
+its own — two devices can stream simultaneously. A third would share, and whoever gets bumped sees
+streams fail while the channel list still loads.
+
+The assignment follows your device's IP address, so a given device keeps the same account for as
+long as its address is stable. Two devices on the *same* network still get different accounts.
 
 ## 1.3 Is it working?
 
 Three ways, fastest first.
 
 **1 — The alerts page.** [Issues labelled `edge-alert`](https://github.com/travispflanz/tuliprox-cf-edge/issues?q=label%3Aedge-alert).
-A workflow checks the live edge every 6 hours and:
+A workflow checks the live edge every 4 hours and:
 
 - **healthy** → no issue at all (and any previous alert is **closed automatically**)
 - **warning** → *"Edge warning — upstream trial expiring soon"*; it still works, but renewal is overdue
@@ -114,7 +121,7 @@ An anonymous visitor to that same URL correctly gets `401`.
    the playlist, EPG integrity, and a real channel returning MPEG-TS bytes.
 2. **The provider account** — `auth`, `status`, expiry. This matters because a lapsed account still
    serves the full catalogue while *every stream fails*.
-3. **Deploy freshness** — if the newest build is over 14 hours old, the schedule has stopped.
+3. **Deploy freshness** — if the newest build is over 10 hours old, the schedule has stopped.
    GitHub silently disables cron in repositories it considers inactive, and this is the only way
    you'd ever find out.
 
@@ -127,30 +134,37 @@ Nothing to edit; just re-run the pipeline.
 3. **Run workflow ▾** → **Run workflow**
 4. ~4 minutes. The run smoke-tests the live edge before going green.
 
-Use this when the provider's lineup changed and you don't want to wait for the next 6-hour cycle.
+Use this when the provider's lineup changed and you don't want to wait for the next 4-hour cycle.
 
 ## 1.5 The provider account — automatic
 
 **There is nothing to do here.** This used to be the one recurring chore; it isn't any more.
 
-Trials last ~36 hours. The build renews on a **24-hour cadence**, so the replacement arrives
-**6–12 hours before the old one dies** (typically ~9h — builds run every 6h, so the cadence is
-evaluated in 6-hour steps). There is never a window where the playlist is backed by a dead account.
+There are **two** provider accounts ("slots"), each renewing itself independently. Trials last
+~36 hours; each slot renews on a **24-hour cadence**, and builds run **every 4 hours**, so a
+replacement is always obtained well before the old account dies.
 
-It also deliberately **reuses** a healthy credential rather than signing up each build. That keeps
-the rate near **1 signup/day** instead of ~4/day, and that restraint is the point: request churn is
+Each slot deliberately **reuses** a healthy credential rather than signing up every build. That
+keeps the rate near **1 signup/day per slot**, and that restraint is the point: request churn is
 what would make the provider treat this as automated abuse and withdraw free trials altogether.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `RENEW_EVERY_HOURS` | `24` | replace the credential once it's a day old |
-| `MIN_HOURS_LEFT` | `12` | safety floor — renew regardless of age if life drops below this |
+| `RENEW_EVERY_HOURS` | `24` | replace a credential once it's a day old |
+| `MIN_HOURS_LEFT` | `6` | safety floor — renew regardless of age if life drops below this |
+| `RENEW_STAGGER_HOURS` | `12` | how far slot 2 is held out of phase with slot 1 |
 
 The floor is a net, not the engine: it covers a lost timestamp, a shorter-than-expected trial, or a
-previous renewal that failed. If a renewal does fail, the next build retries 6 hours later while the
-current credential still has hours left. Want more runway? Lower `RENEW_EVERY_HOURS` to `18` — it
-buys overlap at the cost of more signups. Set it as a
-[repository variable](https://github.com/travispflanz/tuliprox-cf-edge/settings/variables/actions).
+previous renewal that failed. Because builds run every 4 hours and the floor is 6, **a renewal can
+fail once and still be retried while the account is alive** — that relationship is what makes the
+pair of numbers safe, so if you raise the build interval, raise the floor too.
+
+**The two slots are kept out of phase on purpose.** If both were acquired together they would renew
+together and expire together, so one bad renewal cycle would remove *all* capacity at once — the
+very outage the second slot exists to prevent. Slot 2's first renewal is therefore pulled forward to
+`RENEW_STAGGER_HOURS`, after which it rides the normal cadence permanently offset.
+
+Tune any of these as [repository variables](https://github.com/travispflanz/tuliprox-cf-edge/settings/variables/actions).
 
 Acquisition needs **no email, no OTP, no captcha and no browser** — the provider's own API returns
 the credentials in its completion poll. An email *address* is required as an input (the provider
@@ -262,14 +276,14 @@ empty secret or the credential leak gate firing — never bypass the gate, inspe
 
 | Function | Runs on | Cadence |
 |---|---|---|
-| Fetch provider → filter → build indexes | GitHub Actions | every 6 hours |
+| Fetch provider → filter → build indexes | GitHub Actions | every 4 hours |
 | Serve Xtream / M3U / EPG | Cloudflare Pages Functions | always on |
-| Provider credential renewal | GitHub Actions (inside the build) | 24-hour cadence |
-| Health monitoring + alerting | GitHub Actions (`Edge Monitor`) | every 6 hours |
+| Provider credential renewal | GitHub Actions (inside the build) | 24h per slot, staggered 12h |
+| Health monitoring + alerting | GitHub Actions (`Edge Monitor`) | every 4 hours |
 | Credential + secret storage | GitHub Secrets / Actions cache / Pages env | — |
 
 ```
-GitHub Actions  (cron 6h | push | manual dispatch)
+GitHub Actions  (cron 4h | push | manual dispatch)
   acquire_trial.py      ensure a provider credential: reuse while healthy, else acquire a
                         fresh trial from the provider's API (no email/OTP/browser)
   tuliprox v3.3.0       one-shot: xtream in (provider) -> edge_list.m3u + cat_live.json
@@ -294,7 +308,8 @@ config/
   source.yml                  the provider input + output targets + filter
   template.yml                named filter templates referenced by source.yml
 build/
-  acquire_trial.py            provider-credential renewal (reuse vs acquire)
+  acquire_trial.py            per-slot credential renewal (reuse vs acquire)
+  credential_state.py         seed/record credential state across builds
   make_xtream.mjs             m3u + cat_live.json -> static Xtream indexes
   probe_upstream.mjs          provider account health -> dist/_data/upstream.json
   monitor_edge.py             the cloud watchdog's logic
@@ -303,6 +318,7 @@ build/
   verify_renewal_policy.py    the renewal decision matrix (offline)
   verify_credential_persistence.py   credential-age persistence (offline)
   verify_filter_config.py     source.yml <-> template.yml agreement (offline)
+  verify_stream_slots.mjs     dual-credential stream routing, fetch stubbed (offline)
 functions/
   _middleware.js              runs on EVERY request, including static-asset hits — the auth gate
   _lib/auth.js                client credential checking
@@ -315,8 +331,8 @@ functions/
   xmltv.php.js                EPG
   live, movie, series         stream routes (catch-all per type)
 .github/workflows/
-  tuliprox-edge.yml           build + deploy (cron 6h, push, dispatch)
-  edge-monitor.yml            health watchdog (cron 30 */6)
+  tuliprox-edge.yml           build + deploy (cron 4h, push, dispatch)
+  edge-monitor.yml            health watchdog (cron 30 */4)
 .dev.vars.example             template for local Pages dev bindings
 ```
 
@@ -335,23 +351,71 @@ Each run of **Build & Deploy Tuliprox Xtream Edge**:
 4. **Restores the credential persisted by the previous build** (Actions cache)
 5. **Seeds** the effective credential: the persisted one wins over the repository secret, because it
    is *that* credential's real age which decides when renewal is due
-6. **Ensures a usable credential** — reuse while healthy, else acquire a fresh trial
+6. **Ensures a usable credential for each slot** — reuse while healthy, else acquire a fresh trial
 7. Runs **Tuliprox** one-shot: fetch → filter → normalise → `work/edge_list.m3u`
 8. **Probes the provider account** so the edge can report `Expired` rather than failing mysteriously
 9. Fetches the **EPG** (non-fatal if the provider's guide is unavailable)
 10. **Reshapes** the output into the static indexes the edge serves
-11. **Leak gate** — fails if the provider host *actually used* appears anywhere in `dist/`
-12. **Records + persists** the credential in force, for the next build's cadence calculation
+11. **Leak gate** — fails if any provider host *actually used* (either slot) appears in `dist/`
+12. **Records + persists** each slot's credential (and publishes which slots are healthy), for
+    the next build's cadence calculation
 13. **Syncs the Pages environment** from the credential that built this deploy
 14. **Deploys** to Cloudflare Pages
 15. **Smoke-tests the live edge** with the same 27 assertions the monitor uses
 
-## 2.4 The credential renewal engine
+## 2.4 Credential slots
 
-Renewal has two triggers, both in `build/acquire_trial.py`:
+Slot 1 is `PROVIDER_URL/USER/PASS` (and `UPSTREAM_*` at the edge); slot 2 adds a `_2` suffix
+(`PROVIDER_2_URL`, `UPSTREAM_2_URL`, …) and is entirely optional — a single-slot deployment keeps
+working untouched.
+
+**The fact the whole feature rests on:** every slot is an account at the *same* provider, so the
+catalogue — and therefore every stream id — is identical between them. `<host>/live/<user>/<pass>/<id>.ts`
+resolves under either account, so any slot can serve any channel. Nothing about the playlist or the
+indexes changes; only which credential a given request is served with.
+
+**What it buys:** each trial allows `max_connections=1`, so one slot means one viewer. Two slots
+mean two simultaneous viewers plus a spare account to step over.
+
+> **Why NOT a second Tuliprox input.** The obvious move is to add a second `inputs:` entry feeding
+> the same target. Don't: both accounts expose the identical catalogue, so the merged playlist would
+> list every channel twice, and the edge would still serve all of it through slot 1 — `auth.js`
+> builds stream URLs from the credential, not from the playlist. Double the listings, zero extra
+> capacity. The second credential has to live at the **edge**, which is where it now lives.
+
+### How a slot is chosen (per viewer, not per request)
+
+`pickSlot()` hashes the client IP (`CF-Connecting-IP`, FNV-1a) and takes it modulo the healthy slot
+count. Keying on the **viewer** rather than the request is the entire point: alternating one
+player's segment requests across both accounts would occupy both connections for a single viewer
+and still lock out the second device — while looking perfectly fine for the first.
+
+### Failover, and its one honest limit
+
+In **proxy** mode the edge retries the other slot when the first answers `401`/`402`/`5xx`. A `403`
+stops immediately: that is the provider refusing *our egress*, which is not credential-specific and
+would fail identically on every slot, so a second attempt is a wasted round trip.
+
+In **redirect** mode — which is what this provider forces — the player fetches straight from the
+provider, so **the edge never learns whether a stream worked and cannot fail over per request.**
+That gap is covered at build time instead: each build publishes `UPSTREAM_HEALTHY_SLOTS` from the
+acquisition verdicts, and `healthySlots()` keeps dead accounts out of the rotation. It fails **open**
+— an empty or nonsensical hint means "use everything", because a stale hint must never strand
+traffic that could have been served.
+
+The serving slot is reported in `X-Stream-Slot` on every stream response.
+
+## 2.5 The credential renewal engine
+
+Renewal has three triggers, all in `build/acquire_trial.py`, evaluated per slot:
 
 - **Cadence** — the credential in force is `RENEW_EVERY_HOURS` (24) old or older.
-- **Floor** — under `MIN_HOURS_LEFT` (12) of life remains, whatever its age.
+- **Floor** — under `MIN_HOURS_LEFT` (6) of life remains, whatever its age. Keep this above the
+  build interval (4h) so a failed renewal still gets retried while the account is alive.
+- **Stagger** — a slot other than 1 has its *first* renewal pulled forward to
+  `RENEW_STAGGER_HOURS` (12), so the slots stop expiring in lockstep. After that first rotation it
+  is out of phase and uses the normal cadence; `generation` in the state file is what distinguishes
+  a freshly-bootstrapped slot from one that has already rotated.
 
 An **unknown age is never treated as fresh.** Assuming fresh is precisely what would cause a
 renewal to be skipped forever, so an unreadable or missing timestamp falls back to the floor.
@@ -374,7 +438,7 @@ unchanged**, and reset **only** when the credential actually changes. Re-stampin
 would make the account look perpetually brand new, the cadence would never come due, and renewal
 would silently never happen. `verify_credential_persistence.py` pins this.
 
-## 2.5 Hard-won design constraints
+## 2.6 Hard-won design constraints
 
 These are verified behaviours, not theories. Changing the code without knowing them will
 reintroduce bugs that are painful to diagnose.
@@ -415,7 +479,7 @@ reintroduce bugs that are painful to diagnose.
 12. **Individual channels are unreliable** — real IPTV has dead channels. Probe several and accept
     the first success; never assert on one hardcoded channel id.
 
-## 2.6 Testing
+## 2.7 Testing
 
 ```bash
 make test        # offline: no network, no credentials, no provider contact. Gates every build.
@@ -431,6 +495,7 @@ and a **skip** is printed loudly so a missing optional tool can never pass itsel
 | `verify_renewal_policy.py` | the 24h-cadence / 12h-floor decision matrix, boundaries, unknown age, and that no case can reach the signup path |
 | `verify_credential_persistence.py` | extracts and executes the workflow's **own** `run:` blocks, proving a credential's age survives between builds |
 | `verify_filter_config.py` | `source.yml`'s `filter:` and `template.yml` agree — no undefined reference, no orphaned template that silently does nothing, every regex compiles |
+| `verify_stream_slots.mjs` | the dual-credential stream path with `fetch` stubbed: per-viewer slot stability, spread across slots, failover, the 403 short-circuit, and that auth still gates everything |
 | `py_compile` | Python syntax across `build/` |
 | `node --check` | JS syntax — via a `.mjs` copy, since `node --check` parses a `.js` file as CommonJS and would wrongly reject these ES modules |
 | workflows parse | a broken workflow can't be caught by CI, because CI is the thing that breaks |
@@ -452,7 +517,7 @@ MPEG-TS sync bytes (`0x47` at offsets 0/188/376).
 
 > If your `python3` lacks PyYAML, set `YAML_PYTHON=/path/to/python` rather than installing anything.
 
-## 2.7 Local development
+## 2.8 Local development
 
 ```bash
 cp .dev.vars.example .dev.vars        # then fill in real values; .dev.vars is gitignored
@@ -464,7 +529,7 @@ BASE=http://localhost:8788 CLIENT_USER=… CLIENT_PASS=… python3 build/verify_
 locally. `functions/` is bundled **from the current working directory**, not from the asset dir, so
 always deploy from the repo root.
 
-## 2.8 Configuration reference
+## 2.9 Configuration reference
 
 **GitHub repository secrets** — [Settings → Secrets → Actions](https://github.com/travispflanz/tuliprox-cf-edge/settings/secrets/actions)
 
@@ -472,19 +537,27 @@ always deploy from the repo root.
 |---|---|---|
 | `CLIENT_USER`, `CLIENT_PASS` | **yes** | what your players log in with; baked into playlist URLs at build time |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | **yes** | deploy to Pages |
-| `PROVIDER_URL`, `PROVIDER_USER`, `PROVIDER_PASS` | optional | bootstrap + fallback provider credential |
+| `PROVIDER_URL`, `PROVIDER_USER`, `PROVIDER_PASS` | optional | bootstrap + fallback credential for slot 1 |
+| `PROVIDER_2_URL`, `PROVIDER_2_USER`, `PROVIDER_2_PASS` | optional | same, for slot 2. Leave unset and the build mints slot 2 itself |
 
 **GitHub repository variables** (non-secret) — [Settings → Variables → Actions](https://github.com/travispflanz/tuliprox-cf-edge/settings/variables/actions)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `RENEW_EVERY_HOURS` | `24` | renewal cadence |
-| `MIN_HOURS_LEFT` | `12` | renewal safety floor |
+| `MIN_HOURS_LEFT` | `6` | renewal safety floor (keep above the 4h build interval) |
+| `RENEW_STAGGER_HOURS` | `12` | how far slot 2 is held out of phase with slot 1 |
 | `TRIAL_EMAIL_BASE` | `taskgobbler` | local part used to mint `+alias` addresses |
 
 **Cloudflare Pages environment** — synced automatically by every build; don't edit by hand:
-`CLIENT_USER`, `CLIENT_PASS`, `UPSTREAM_URL`, `UPSTREAM_USER`, `UPSTREAM_PASS`.
+`CLIENT_USER`, `CLIENT_PASS`, `UPSTREAM_URL/USER/PASS` (slot 1), `UPSTREAM_2_URL/USER/PASS`
+(slot 2, when configured), and `UPSTREAM_HEALTHY_SLOTS` (e.g. `1,2`) — the build's verdict on
+which accounts are live, which the edge cannot determine for itself.
 
-**Monitor tuning** (`build/monitor_edge.py`): `WARN_HOURS` (6) warns only when automated renewal is
-*overdue* — deliberately below the 12h floor, so the normal cadence never generates noise;
-`STALE_HOURS` (14) catches a stopped schedule.
+`STREAM_MODE` is optional: `proxy` (default) attempts an edge fetch and falls back to a redirect;
+`redirect` skips the doomed fetch entirely, which is the right setting for a provider that blocks
+Cloudflare's egress.
+
+**Monitor tuning** (`build/monitor_edge.py`): `WARN_HOURS` (3) warns only when automated renewal is
+*overdue* — deliberately below the 6h floor, so the normal cadence never generates noise;
+`STALE_HOURS` (10) catches a stopped schedule on a 4-hour build cycle.

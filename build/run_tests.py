@@ -84,8 +84,17 @@ def offline() -> None:
     record(f"py_compile ({len(py)} modules)", PASS if proc.returncode == 0 else FAIL,
            proc.stderr.strip()[:300])
 
-    print("\n=== offline: javascript syntax ===")
+    print("\n=== offline: edge stream routing (fetch stubbed) ===")
     node = shutil.which("node")
+    if not node:
+        record("verify_stream_slots.mjs", SKIP, "node is not installed here (CI has it)")
+    else:
+        proc = run([node, "build/verify_stream_slots.mjs"])
+        summary = next((ln for ln in proc.stdout.splitlines() if "checks passed" in ln), "")
+        record("verify_stream_slots.mjs", PASS if proc.returncode == 0 else FAIL,
+               f"rc={proc.returncode} {summary} :: {proc.stderr.strip()[:200]}".strip())
+
+    print("\n=== offline: javascript syntax ===")
     if not node:
         record("node --check", SKIP, "node is not installed here (CI has it)")
     else:

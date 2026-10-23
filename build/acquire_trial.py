@@ -28,18 +28,32 @@ FLOW (HTTP+JSON against the provider's own API — no browser, no captcha, no fo
 
 Flags:
   (none)          always acquire a fresh trial
-  --if-needed     reuse the credential already in $PROVIDER_* while it is still healthy, and sign
-                  up only when a renewal is actually due. This is what the build uses.
+  --if-needed     reuse the credential already in force while it is still healthy, and sign up only
+                  when a renewal is actually due. This is what the build uses.
   --force         always acquire, even under --if-needed (for testing the acquisition path)
+  --slot N        which credential slot to manage (default 1)
+
+CREDENTIAL SLOTS
+  Slot 1 reads PROVIDER_URL/USER/PASS; slot N>1 reads PROVIDER_<N>_*. Each slot is an independent
+  account from the SAME provider, carrying its own age and its own renewal schedule.
+
+  Why more than one: every trial allows max_connections=1, so one account means one viewer at a
+  time. Because all the accounts share one catalogue, any of them can serve any channel — so a
+  second slot buys a second simultaneous viewer and an account to step over when one dies.
 
 WHEN A RENEWAL IS DUE (--if-needed)
   1. CADENCE — the credential in force is RENEW_EVERY_HOURS (default 24) old or older.
-     Trials here last ~36h, so renewing once a day leaves ~12h of overlap: a fresh credential is
-     always obtained WELL BEFORE the old one dies, so the playlist never has a window where its
-     account is dead. It also holds the signup rate at ~1/day instead of ~4/day, which is the
-     whole point — request churn is what risks the provider reading this as automated abuse.
-  2. FLOOR — under MIN_HOURS_LEFT (default 12) of life remains, whatever the age. Covers a
+     Trials here last ~36h, so renewing once a day obtains the replacement WELL BEFORE the old one
+     dies, and holds the signup rate near 1/day per slot. That restraint is the whole point:
+     request churn is what risks the provider reading this as automated abuse.
+  2. FLOOR — under MIN_HOURS_LEFT (default 6) of life remains, whatever the age. Covers a
      lost/unknown timestamp, a shorter-than-expected trial, or an earlier renewal that failed.
+     Keep it above the build interval, so at least one more build runs while the credential lives.
+  3. STAGGER — a slot other than 1 has its FIRST renewal pulled forward to RENEW_STAGGER_HOURS
+     (default half the cadence). Without this, slots bootstrapped together would renew together
+     and expire together, so one failed cycle would remove ALL capacity at once — the very outage
+     the extra slot exists to prevent. After its first renewal a slot is out of phase and rides
+     the normal cadence.
 
   The age is read from the state file the build persists between runs (CRED_FILE). When that file
   is absent — the very first run, bootstrapping from repository secrets — the age is UNKNOWN and
@@ -88,19 +102,60 @@ POLL_TRIES = int(os.environ.get("TRIAL_POLL_TRIES") or "40")
 POLL_WAIT = float(os.environ.get("TRIAL_POLL_WAIT") or "1.5")
 
 # Renewal cadence: once the credential in force reaches this age, the next build replaces it.
-# Trials here live ~36h, so a 24h cadence leaves ~12h of overlap — the fresh credential is obtained
-# well before the old one dies, so the playlist never has a window with a dead account. It also
-# holds the signup rate at ~1/day instead of ~4/day, which is what would read as abuse.
+# Trials here live ~36h, so a 24h cadence obtains the replacement well before the old one dies and
+# holds the signup rate near 1/day per slot, which is what keeps this from reading as abuse.
 RENEW_EVERY_HOURS = float(os.environ.get("RENEW_EVERY_HOURS") or "24")
 
-# Safety floor: renew regardless of age once this little life is left. This is purely the net for an
-# unknown timestamp, a shorter-than-expected trial, or an earlier renewal that failed — it does not
-# drive the normal cadence.
-MIN_HOURS_LEFT = float(os.environ.get("MIN_HOURS_LEFT") or "12")
+# Safety floor: renew regardless of age once this little life is left. Purely a net for an unknown
+# timestamp, a shorter-than-expected trial, or an earlier renewal that failed — it does not drive
+# the normal cadence. Must stay comfortably above the build interval so at least one more build is
+# guaranteed to run while the credential is still alive.
+MIN_HOURS_LEFT = float(os.environ.get("MIN_HOURS_LEFT") or "6")
+
+# CREDENTIAL SLOTS
+# Slot 1 is PROVIDER_URL/USER/PASS; slot N>1 is PROVIDER_<N>_*. Several accounts from the SAME
+# provider share one catalogue, so any slot can serve any channel — which is what lets two devices
+# watch at once (each trial allows max_connections=1) and lets a dead account be stepped over.
+SLOT = 1
+
+# Keep the slots out of phase. If both were acquired together they would renew together and expire
+# together, so a single failed renewal cycle would take out ALL capacity at once — exactly the
+# outage the second slot exists to prevent. A slot's FIRST renewal is therefore pulled forward to
+# this age; afterwards it rides the normal cadence, permanently offset from the other slot.
+RENEW_STAGGER_HOURS = float(os.environ.get("RENEW_STAGGER_HOURS") or str(RENEW_EVERY_HOURS / 2))
 
 # The build records the credential it settled on here so the next run can age it. Absent on the
 # first run (bootstrap from repository secrets), which reads as UNKNOWN age — never as fresh.
 CRED_FILE = os.environ.get("CRED_FILE") or ".cred/provider.json"
+
+
+def prov(name: str) -> str:
+    """Read this slot's PROVIDER_* variable (slot 1 keeps the unsuffixed names)."""
+    suffix = "" if SLOT == 1 else f"_{SLOT}"
+    return os.environ.get(f"PROVIDER{suffix}_{name}") or ""
+
+
+def load_state() -> dict:
+    """Read the persisted credential state, tolerating the pre-slot flat format.
+
+    Returns {"slots": {"1": {...}, ...}}. A legacy flat document is read as slot 1 so an existing
+    deployment keeps its measured age instead of silently resetting to 'unknown' and renewing.
+    """
+    try:
+        with open(CRED_FILE, encoding="utf-8") as fh:
+            raw = json.load(fh) or {}
+    except Exception:
+        return {"slots": {}}
+    if isinstance(raw.get("slots"), dict):
+        return {"slots": raw["slots"]}
+    if raw.get("user"):
+        return {"slots": {"1": raw}}
+    return {"slots": {}}
+
+
+def slot_state(slot: int | None = None) -> dict:
+    entry = load_state()["slots"].get(str(slot if slot is not None else SLOT))
+    return entry if isinstance(entry, dict) else {}
 
 # Registration edges reset connections that arrive without a browser-like UA.
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -213,8 +268,7 @@ def credential_age_hours() -> float | None:
     assume the credential is fresh: that is exactly what would silently skip a renewal.
     """
     try:
-        with open(CRED_FILE, encoding="utf-8") as fh:
-            stamp = (json.load(fh) or {}).get("acquired_at")
+        stamp = slot_state().get("acquired_at")
         if not stamp:
             return None
         when = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
@@ -233,9 +287,9 @@ def current_credential_status() -> tuple[str | None, str, float | None]:
     the panel reports no expiry — treated by the caller as usable, because re-signing-up on an
     account that authenticates right now would burn a trial for nothing.
     """
-    url = (os.environ.get("PROVIDER_URL") or "").rstrip("/")
-    user = os.environ.get("PROVIDER_USER") or ""
-    pwd = os.environ.get("PROVIDER_PASS") or ""
+    url = prov("URL").rstrip("/")
+    user = prov("USER")
+    pwd = prov("PASS")
     if not (user and pwd):
         return None, user, 0.0
     for panel in ([url] if url else PANELS):
@@ -278,64 +332,89 @@ def verify_credential(user: str, pwd: str, attempts: int = 6, wait: int = 10) ->
     return None, 0
 
 
+def cadence_for_slot() -> float:
+    """The age at which THIS slot's renewal falls due.
+
+    Slot 1 always rides the plain cadence. Another slot's FIRST renewal is pulled forward to
+    RENEW_STAGGER_HOURS so the slots stop expiring in lockstep; once it has renewed at least once
+    (generation > 0) it is already out of phase and uses the normal cadence.
+    """
+    if SLOT == 1:
+        return RENEW_EVERY_HOURS
+    generation = slot_state().get("generation") or 0
+    try:
+        generation = int(generation)
+    except (TypeError, ValueError):
+        generation = 0
+    return RENEW_EVERY_HOURS if generation > 0 else min(RENEW_STAGGER_HOURS, RENEW_EVERY_HOURS)
+
+
 def main() -> int:
+    global SLOT
     argv = sys.argv[1:]
     force = "--force" in argv
     if_needed = "--if-needed" in argv
+    if "--slot" in argv:
+        try:
+            SLOT = int(argv[argv.index("--slot") + 1])
+        except (IndexError, ValueError):
+            log("  FAIL: --slot needs an integer")
+            return 1
 
     # Deliberately conservative: a healthy credential is REUSED until its renewal is actually due
-    # — see the CADENCE and FLOOR rules at the top of this file. Signing up on every 6h build would
-    # mean ~4 trials/day, and that churn is what risks the provider treating this as automated
-    # abuse and withdrawing the free trial entirely.
+    # — see the CADENCE and FLOOR rules at the top of this file. Signing up on every build would
+    # mean several trials/day per slot, and that churn is what risks the provider treating this as
+    # automated abuse and withdrawing the free trial entirely.
     if if_needed and not force:
         panel, user, hours = current_credential_status()
         age = credential_age_hours()
+        cadence = cadence_for_slot()
         usable = bool(panel) and (hours is None or hours > MIN_HOURS_LEFT)
-        due = age is not None and age >= RENEW_EVERY_HOURS
+        due = age is not None and age >= cadence
         if usable and not due:
             shown = "expiry not reported" if hours is None else f"{hours}h left"
             aged = "age unknown (bootstrap)" if age is None else f"age {age}h"
-            log(f"  reusing the credential already in force: {user} on {panel} ({shown}, {aged})")
-            log(f"  no signup made — renewal falls due at {RENEW_EVERY_HOURS}h old "
-                f"or {MIN_HOURS_LEFT}h left")
-            emit(status="reused", username=user, url=panel,
+            log(f"  slot {SLOT}: reusing the credential already in force: {user} on {panel} "
+                f"({shown}, {aged})")
+            log(f"  no signup made — renewal falls due at {cadence}h old or {MIN_HOURS_LEFT}h left")
+            emit(status="reused", username=user, url=panel, slot=SLOT,
                  age_hours="" if age is None else age)
             return 0
         reasons = []
         if not usable:
             reasons.append(f"panel={panel}, hours_left={hours}")
         if due:
-            reasons.append(f"age {age}h has reached the {RENEW_EVERY_HOURS}h cadence")
-        log(f"  renewal due ({'; '.join(reasons)}) — acquiring a fresh trial")
+            reasons.append(f"age {age}h has reached the {cadence}h cadence")
+        log(f"  slot {SLOT}: renewal due ({'; '.join(reasons)}) — acquiring a fresh trial")
 
     email = os.environ.get("TRIAL_EMAIL") or mint_alias()
-    log("=== acquiring a provider trial via API ===")
+    log(f"=== acquiring a provider trial via API (slot {SLOT}) ===")
     log(f"  site : {SITE}")
     log(f"  email: {email}   (input only — nothing reads this inbox)")
 
     if email_is_used(email):
         log("  FAIL: this address already has a trial (dedup is permanent per address)")
-        emit(status="failed", reason="email_already_used")
+        emit(status="failed", slot=SLOT, reason="email_already_used")
         return 1
 
     port = find_working_port()
     if port is None:
         log("  FAIL: no working proxy port (provider-side gate)")
-        emit(status="failed", reason="no_working_proxy_port")
+        emit(status="failed", slot=SLOT, reason="no_working_proxy_port")
         return 1
     log(f"  working proxy port: {port}")
 
     ok, detail, task_id = request_trial(email, port)
     if not ok or not task_id:
         log(f"  FAIL: trial request rejected — {detail}")
-        emit(status="failed", reason=detail)
+        emit(status="failed", slot=SLOT, reason=detail)
         return 1
 
     creds = poll_task(task_id)
     user, pwd = creds.get("username"), creds.get("password")
     if not (user and pwd):
         log("  FAIL: task did not complete with credentials")
-        emit(status="failed", reason="no_credentials_from_task")
+        emit(status="failed", slot=SLOT, reason="no_credentials_from_task")
         return 1
     log(f"  credentials issued: username={user}")
 
@@ -345,15 +424,15 @@ def main() -> int:
         # Never discard it silently — a trial that hasn't gone live yet is still real, and
         # without this the credential is unrecoverable and undiagnosable.
         log(f"  issued but unverified: username={user} password={pwd}")
-        emit(status="unverified", username=user, password=pwd,
+        emit(status="unverified", slot=SLOT, username=user, password=pwd,
              reason="issued_credential_not_active")
         return 1
 
     exp_str = dt.datetime.fromtimestamp(exp, dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if exp else "unknown"
     log(f"  VERIFIED on {panel} — expires {exp_str}")
-    log(f"ACQUIRED: username={user} url={panel}")
+    log(f"ACQUIRED: slot={SLOT} username={user} url={panel}")
 
-    emit(status="ok", username=user, password=pwd, url=panel,
+    emit(status="ok", slot=SLOT, username=user, password=pwd, url=panel,
          email=email, expires=exp or "", expires_at=exp_str)
     return 0
 

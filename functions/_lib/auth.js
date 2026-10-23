@@ -51,14 +51,97 @@ export async function isAuthorized(request, env) {
   return safeEqual(u, cu) && safeEqual(p, cp);
 }
 
-/** The provider stream URL for a given id — rebuilt from env, never stored. */
+/**
+ * PROVIDER CREDENTIAL SLOTS
+ *
+ * The edge can hold more than one provider account. Slot 1 is `UPSTREAM_URL/USER/PASS`
+ * (unchanged, so a single-credential deployment keeps working); slot N>1 adds the
+ * `UPSTREAM_<N>_*` triplet and is entirely optional.
+ *
+ * Why this works at all: every credential is from the SAME provider, so the catalogue — and
+ * therefore every stream id — is identical between them. `<host>/live/<user>/<pass>/<id>.ts`
+ * resolves under either account, which means any channel can be served by any slot. That is the
+ * fact the whole feature rests on.
+ *
+ * What it buys: each trial allows `max_connections=1`, so one slot means one viewer at a time.
+ * Two slots mean two simultaneous viewers, plus a spare account to fall back to.
+ */
+export const SLOT_NUMBERS = [1, 2];
+
+function slotCred(env, slot) {
+  const suffix = slot === 1 ? '' : `_${slot}`;
+  return {
+    slot,
+    url: (env[`UPSTREAM${suffix}_URL`] || '').replace(/\/+$/, ''),
+    user: env[`UPSTREAM${suffix}_USER`] || '',
+    pass: env[`UPSTREAM${suffix}_PASS`] || '',
+  };
+}
+
+/** Every fully-populated slot, in order. A half-filled slot is ignored, not half-used. */
+export function upstreamSlots(env) {
+  return SLOT_NUMBERS.map((n) => slotCred(env, n)).filter((c) => c.url && c.user && c.pass);
+}
+
+/**
+ * The slots worth sending traffic to.
+ *
+ * The build probes each account and publishes the live ones in `UPSTREAM_HEALTHY_SLOTS`
+ * (e.g. "1,2"). This matters because the provider refuses our egress, so streams are delivered
+ * by redirect and the edge never sees whether one worked — without build-time health the edge
+ * would keep handing a third of its viewers to a dead account for hours.
+ *
+ * Fails OPEN: if the hint is missing or would exclude everything, all configured slots are used.
+ * A stale hint must never strand traffic that could have been served.
+ */
+export function healthySlots(env) {
+  const configured = upstreamSlots(env);
+  const hint = String(env.UPSTREAM_HEALTHY_SLOTS || '').trim();
+  if (!hint) return configured;
+  const allowed = new Set(
+    hint.split(',').map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isInteger),
+  );
+  const healthy = configured.filter((c) => allowed.has(c.slot));
+  return healthy.length ? healthy : configured;
+}
+
+/** The provider stream URL for one slot — rebuilt per request, never stored. */
+export function streamUrlFor(cred, kind, id, ext) {
+  const u = encodeURIComponent(cred.user);
+  const p = encodeURIComponent(cred.pass);
+  return `${cred.url}/${kind}/${u}/${p}/${id}.${ext}`;
+}
+
+/**
+ * Pick a slot for this caller, stably.
+ *
+ * Keyed on the VIEWER (client IP), not on the request, and that distinction is the whole point:
+ * alternating a single player's segment requests across both accounts would occupy both
+ * connections for one viewer and still lock out the second device. Hashing the IP gives each
+ * device its own account for as long as its address is stable, so two devices really do stream
+ * at once. FNV-1a — tiny, no allocation, no crypto needed for a load-spreading decision.
+ */
+export function pickSlot(request, creds) {
+  if (creds.length <= 1) return creds[0];
+  const key =
+    request.headers.get('CF-Connecting-IP') ||
+    request.headers.get('X-Forwarded-For') ||
+    request.headers.get('User-Agent') ||
+    'anonymous';
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return creds[(hash >>> 0) % creds.length];
+}
+
+/** Back-compatible single-credential helpers (slot 1, or the first populated slot). */
 export function upstreamStream(env, kind, id, ext) {
-  const base = (env.UPSTREAM_URL || '').replace(/\/+$/, '');
-  const u = encodeURIComponent(env.UPSTREAM_USER || '');
-  const p = encodeURIComponent(env.UPSTREAM_PASS || '');
-  return `${base}/${kind}/${u}/${p}/${id}.${ext}`;
+  const [first] = upstreamSlots(env);
+  return first ? streamUrlFor(first, kind, id, ext) : '';
 }
 
 export function upstreamConfigured(env) {
-  return Boolean(env.UPSTREAM_URL && env.UPSTREAM_USER && env.UPSTREAM_PASS);
+  return upstreamSlots(env).length > 0;
 }

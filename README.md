@@ -14,7 +14,12 @@ step at all. A second scheduled workflow watches everything and opens a GitHub i
 | **Health alerts** | [Issues labelled `edge-alert`](https://github.com/travispflanz/tuliprox-cf-edge/issues?q=label%3Aedge-alert) |
 | **Secrets** | [Settings → Secrets → Actions](https://github.com/travispflanz/tuliprox-cf-edge/settings/secrets/actions) |
 | **Cloudflare** | [dash.cloudflare.com](https://dash.cloudflare.com) → Workers & Pages → `tuliprox-edge-gateway` |
-| **Currently serving** | 10,312 channels across 163 categories, with EPG |
+| **Currently serving** | ~9–10k live channels across ~120–165 categories, with EPG |
+
+> Channel and category counts move whenever the provider's lineup changes (observed between 9,026
+> and 13,651 depending on the filter and the day), so this document gives ranges rather than a
+> figure that is stale the moment it is written. For the live number, see the latest build's summary
+> or `get_live_streams` ([§1.3](#13-is-it-working)).
 
 > **Everything in Part 1 is done in a web browser.** No terminal, no CLI, no local install.
 > Part 2 is for developers and AI agents working on the code.
@@ -185,8 +190,9 @@ templates:
 
 The playlist is currently **filtered to English-language groups**: `DROP_NONENG` removes any
 category whose name starts with one of those region prefixes. Add a prefix to drop that region;
-remove one to bring it back. This filter currently yields **10,312 channels / 163 categories** out
-of the provider's ~301 raw categories.
+remove one to bring it back. This filter keeps roughly half of what the provider offers — about
+9–10k channels out of its ~300 raw categories — though the exact figure tracks the provider's
+lineup and changes week to week.
 
 Patterns are regular expressions matched against the category name: `(?i)` makes it
 case-insensitive and `^…:` anchors to the start of the name.

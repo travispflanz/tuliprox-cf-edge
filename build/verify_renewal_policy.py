@@ -113,31 +113,37 @@ def run_if_needed(hours_old: float | None, hours_left: float | None, slot: int =
     return rc, buf.getvalue(), reached["signup"]
 
 
-CADENCE = at.RENEW_EVERY_HOURS
-FLOOR = at.MIN_HOURS_LEFT
+RUNWAY = at.RENEW_WHEN_HOURS_LEFT      # the ONLY renewal trigger
+MAX_AGE = at.RENEW_MAX_AGE_HOURS       # fallback cap, used only when no expiry is reported
 STAGGER = at.RENEW_STAGGER_HOURS
-LOTS = CADENCE + FLOOR + 10          # comfortably healthy, whatever the thresholds are
+LOTS = RUNWAY + 30                     # comfortably healthy, whatever the threshold is
 
 print("=== credential renewal policy ===")
-print(f"  cadence={CADENCE}h  floor={FLOOR}h  stagger={STAGGER}h  state-file={at.CRED_FILE}")
+print(f"  runway={RUNWAY}h  max_age={MAX_AGE}h  stagger={STAGGER}h  state-file={at.CRED_FILE}")
 
 # Every case is expressed RELATIVE to the configured thresholds. Hardcoded hours would silently
 # start testing the wrong boundary the moment a threshold is tuned — which is exactly what
 # happened when the floor moved from 12h to 6h.
 CASES = [
     # (description, age_hours, hours_left, expected)
-    ("healthy and young -> reuse",                       1.0,             LOTS,      "reuse"),
-    ("just under the cadence -> reuse",                  CADENCE - 0.1,   LOTS,      "reuse"),
-    ("exactly at the cadence -> renew",                  CADENCE,         LOTS,      "renew"),
-    ("past the cadence -> renew",                        CADENCE + 6,     FLOOR + 1, "renew"),
-    ("cadence reached though lots of life -> renew",     CADENCE + 1,     LOTS,      "renew"),
-    ("young but under the floor -> renew",               1.0,             FLOOR - 1, "renew"),
-    ("exactly at the floor -> renew",                    1.0,             FLOOR,     "renew"),
-    ("just above the floor -> reuse",                    1.0,             FLOOR + 0.1, "reuse"),
-    ("age unknown, healthy -> reuse",                    None,            LOTS,      "reuse"),
-    ("age unknown, under the floor -> renew",            None,            FLOOR - 1, "renew"),
-    ("age unknown, no expiry reported -> reuse",          None,            None,      "reuse"),
-    ("cadence reached, no expiry -> renew",              CADENCE + 1,     None,      "renew"),
+    ("healthy with plenty of life -> reuse",               1.0,             LOTS,          "reuse"),
+    ("just above the runway -> reuse",                    1.0,             RUNWAY + 0.1,  "reuse"),
+    ("exactly at the runway -> renew",                    1.0,             RUNWAY,        "renew"),
+    ("just under the runway -> renew",                    1.0,             RUNWAY - 0.1,  "renew"),
+    # The whole point of collapsing two rules into one: AGE ALONE no longer renews anything. A
+    # credential that still has life is kept however old it is, which is what makes the policy adapt
+    # to whatever trial length the provider actually issues instead of assuming one.
+    ("old but with life left -> reuse (age alone never renews)", 99.0,      LOTS,          "reuse"),
+    ("very old, yet just under the runway -> renew",      300.0,           RUNWAY - 0.1,  "renew"),
+    ("age unknown, plenty of life -> reuse",              None,            LOTS,          "reuse"),
+    ("age unknown, under the runway -> renew",            None,            RUNWAY - 0.1,  "renew"),
+    # Expiry unreadable: the age cap is the only signal, and it asks a genuinely different question.
+    ("no expiry reported, age under the cap -> reuse",    MAX_AGE - 0.1,   None,          "reuse"),
+    ("no expiry reported, age AT the cap -> renew",       MAX_AGE,         None,          "renew"),
+    ("no expiry reported, age past the cap -> renew",     MAX_AGE + 6,     None,          "renew"),
+    # Neither readable: adopt what is configured. It authenticates right now, and renewing instead
+    # would burn a trial on every build if the state file could not persist.
+    ("neither age nor expiry readable -> adopt",          None,            None,          "reuse"),
 ]
 
 for desc, age, left, expected in CASES:
@@ -154,25 +160,25 @@ for desc, age, left, expected in CASES:
 print("\n=== slot staggering (so the slots never expire together) ===")
 # A second slot bootstrapped alongside the first would otherwise renew and expire in lockstep,
 # and one failed cycle would then remove ALL viewing capacity at once.
-mid = (STAGGER + CADENCE) / 2            # past the stagger, short of the full cadence
-rc, out, signup = run_if_needed(mid, LOTS, slot=2, generation=0)
-check("slot 2's FIRST renewal is pulled forward to the stagger point",
+inside = RUNWAY + STAGGER - 0.1          # inside slot 2's WIDENED runway, outside slot 1's
+rc, out, signup = run_if_needed(1.0, inside, slot=2, generation=0)
+check("slot 2's FIRST renewal widens the runway by the stagger",
       "renewal due" in out and not signup, out.strip()[:110])
 
-rc, out, signup = run_if_needed(mid, LOTS, slot=1, generation=0)
-check("slot 1 at the same age is NOT due (it rides the full cadence)",
+rc, out, signup = run_if_needed(1.0, inside, slot=1, generation=0)
+check("slot 1 at the same remaining life is NOT due (it rides the plain runway)",
       rc == 0 and "no signup made" in out and not signup, out.strip()[:110])
 
-rc, out, signup = run_if_needed(mid, LOTS, slot=2, generation=1)
-check("once slot 2 has renewed it is out of phase and uses the normal cadence",
+rc, out, signup = run_if_needed(1.0, inside, slot=2, generation=1)
+check("once slot 2 has renewed it is out of phase and uses the plain runway",
       rc == 0 and "no signup made" in out and not signup, out.strip()[:110])
 
-rc, out, signup = run_if_needed(STAGGER - 0.1, LOTS, slot=2, generation=0)
-check("slot 2 just before the stagger point -> reuse",
+rc, out, signup = run_if_needed(1.0, RUNWAY + STAGGER + 0.1, slot=2, generation=0)
+check("slot 2 just outside the widened runway -> reuse",
       rc == 0 and "no signup made" in out and not signup, out.strip()[:110])
 
-rc, out, signup = run_if_needed(1.0, FLOOR - 1, slot=2, generation=5)
-check("the floor still applies to any slot regardless of generation",
+rc, out, signup = run_if_needed(1.0, RUNWAY - 1, slot=2, generation=5)
+check("the runway applies to any slot regardless of generation",
       "renewal due" in out and not signup, out.strip()[:110])
 
 print("\n=== backoff after a failed acquisition (the provider-goodwill guard) ===")
@@ -199,7 +205,7 @@ rc, out, signup = run_if_needed(None, 0.0, slot=2, generation=0)
 check("no attempt on record is not treated as a recent failure",
       "backing off" not in out, out.strip()[:160])
 
-rc, out, signup = run_if_needed(1.0, FLOOR - 1, slot=1,
+rc, out, signup = run_if_needed(1.0, RUNWAY - 1, slot=1,
                                 last_status="failed", last_attempt_hours=1.0, force=True)
 check("--force overrides the backoff (an operator asked explicitly)",
       "backing off" not in out, out.strip()[:160])
@@ -241,10 +247,14 @@ CRED.write_text(json.dumps({"slots": {"1": {"user": USER,
 check("future timestamp -> age unknown, not negative", at.credential_age_hours() is None)
 
 print("\n=== threshold sanity (a misconfiguration here is an outage) ===")
-check("the floor leaves room for at least one more build",
-      FLOOR >= 4, f"floor={FLOOR}h must exceed the build interval")
-check("the stagger sits strictly inside the cadence",
-      0 < STAGGER < CADENCE, f"stagger={STAGGER} cadence={CADENCE}")
+# The runway doubles as the WINDOW a build must land in, so it has to clear the interval this
+# pipeline really sees — not the nominal 4h. GitHub's cron has been measured 10h+ late.
+check("the runway clears the REAL (not nominal) build interval",
+      RUNWAY >= 12, f"runway={RUNWAY}h must exceed the 10h+ this pipeline actually sees")
+check("the fallback cap is a distinct knob, not a second copy of the runway",
+      MAX_AGE > 0 and MAX_AGE != RUNWAY, f"max_age={MAX_AGE} runway={RUNWAY}")
+check("slot 2's widened runway still starts from a live credential",
+      RUNWAY + STAGGER < 36, f"margin={RUNWAY + STAGGER}h must stay under the ~36h trial life")
 
 print(f"\n=== {checks - len(failures)}/{checks} checks passed ===")
 for f in failures:

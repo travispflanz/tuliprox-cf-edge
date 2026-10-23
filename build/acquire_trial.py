@@ -42,22 +42,33 @@ CREDENTIAL SLOTS
   second slot buys a second simultaneous viewer and an account to step over when one dies.
 
 WHEN A RENEWAL IS DUE (--if-needed)
-  1. CADENCE — the credential in force is RENEW_EVERY_HOURS (default 24) old or older.
-     Trials here last ~36h, so renewing once a day obtains the replacement WELL BEFORE the old one
-     dies, and holds the signup rate near 1/day per slot. That restraint is the whole point:
-     request churn is what risks the provider reading this as automated abuse.
-  2. FLOOR — under MIN_HOURS_LEFT (default 6) of life remains, whatever the age. Covers a
-     lost/unknown timestamp, a shorter-than-expected trial, or an earlier renewal that failed.
-     Keep it above the build interval, so at least one more build runs while the credential lives.
-  3. STAGGER — a slot other than 1 has its FIRST renewal pulled forward to RENEW_STAGGER_HOURS
-     (default half the cadence). Without this, slots bootstrapped together would renew together
-     and expire together, so one failed cycle would remove ALL capacity at once — the very outage
-     the extra slot exists to prevent. After its first renewal a slot is out of phase and rides
-     the normal cadence.
 
-  The age is read from the state file the build persists between runs (CRED_FILE). When that file
-  is absent — the very first run, bootstrapping from repository secrets — the age is UNKNOWN and
-  only the floor applies. Never assume fresh: assuming fresh is what would silently skip a renewal.
+  There is ONE question: how much LIFE does the credential in force have left?
+
+  1. RUNWAY — renew once RENEW_WHEN_HOURS_LEFT (default 12) or less of life remains. Trials here
+     last ~36h, so a 12h runway replaces a credential with a quarter of its life still in hand and
+     holds the signup rate near 1/day per slot. That restraint is the point: request churn is what
+     risks the provider reading this as automated abuse.
+
+     There is deliberately NO separate age cadence. An earlier version had both, and on a ~36h trial
+     the 24h cadence always fired first (at 12h left) — so the "6h floor" could never be reached on
+     a healthy credential. Two rules that LOOK like belt-and-braces but behave as one is worse than
+     one rule, because it hides which number actually matters. Watching life remaining instead of
+     wall-clock age also adapts to whatever trial length the provider actually issues.
+
+     The threshold IS the window in which a build must land: renewing at N hours left means some
+     build has to occur during the last N hours. It must exceed the REAL build interval, not the
+     nominal one — see RENEW_WHEN_HOURS_LEFT below for why it is 12 and not 6.
+
+  2. STAGGER — a slot other than 1 adds RENEW_STAGGER_HOURS (default 12) to its runway on its
+     FIRST renewal only. Without this, slots bootstrapped together would renew together and expire
+     together, so one failed cycle would remove ALL capacity at once — the very outage the extra
+     slot exists to prevent. After its first renewal a slot is out of phase and rides the plain
+     runway.
+
+  3. UNREADABLE EXPIRY — a fallback, not a co-equal rule. When the panel reports no expiry at all,
+     "life remaining" cannot be evaluated and the age is used against RENEW_MAX_AGE_HOURS instead.
+     The age is read from the state file the build persists between runs (CRED_FILE).
 
 Env:
   TRIAL_EMAIL        full address to request with (default: a fresh alias, see below)
@@ -66,9 +77,9 @@ Env:
   PROVIDER_SITE      default https://www.weselliptv.com
   PANEL_URLS         comma-separated, default http://kytv.xyz,http://kemotvpromax.xyz
   TRIAL_POLL_TRIES   default 120       TRIAL_POLL_WAIT default 1.5 (seconds)
-  RENEW_EVERY_HOURS  default 24 — renewal cadence under --if-needed
-  MIN_HOURS_LEFT     default 6 — renewal floor under --if-needed
-  RENEW_STAGGER_HOURS  default cadence/2 — holds slot 2 out of phase with slot 1
+  RENEW_WHEN_HOURS_LEFT default 12 — renew at or below this much remaining life (the only trigger)
+  RENEW_STAGGER_HOURS   default 12 — added to a slot>1's runway on its FIRST renewal only
+  RENEW_MAX_AGE_HOURS   default 24 — age cap used ONLY when the panel reports no expiry
   ACQUIRE_RETRY_HOURS  default 12 — backoff after a FAILED acquisition
   CRED_FILE          default .cred/provider.json — the renewal age is read from here
   PROVIDER_URL/USER/PASS  the credential in force, inspected by --if-needed
@@ -107,16 +118,21 @@ PROXY_PORTS = range(10010, 10040)
 POLL_TRIES = int(os.environ.get("TRIAL_POLL_TRIES") or "120")
 POLL_WAIT = float(os.environ.get("TRIAL_POLL_WAIT") or "1.5")
 
-# Renewal cadence: once the credential in force reaches this age, the next build replaces it.
-# Trials here live ~36h, so a 24h cadence obtains the replacement well before the old one dies and
-# holds the signup rate near 1/day per slot, which is what keeps this from reading as abuse.
-RENEW_EVERY_HOURS = float(os.environ.get("RENEW_EVERY_HOURS") or "24")
+# THE renewal rule: replace the credential in force once this little LIFE REMAINS. This is the only
+# trigger — there is deliberately no separate age cadence (see the docstring for why two rules that
+# behave as one are worse than one honest rule).
+#
+# The threshold doubles as the WINDOW in which a build must land, so it has to exceed the REAL build
+# interval. GitHub's cron is best-effort and gaps of 10.6h have been measured on this repository
+# against a 4h schedule, which is why this is 12 and not 6: 6 is not a tighter margin, it is a
+# renewal that gets stepped clean over, after which the account dies while the catalogue keeps
+# serving. Lower it only alongside a clock you actually trust.
+RENEW_WHEN_HOURS_LEFT = float(os.environ.get("RENEW_WHEN_HOURS_LEFT") or "12")
 
-# Safety floor: renew regardless of age once this little life is left. Purely a net for an unknown
-# timestamp, a shorter-than-expected trial, or an earlier renewal that failed — it does not drive
-# the normal cadence. Must stay comfortably above the build interval so at least one more build is
-# guaranteed to run while the credential is still alive.
-MIN_HOURS_LEFT = float(os.environ.get("MIN_HOURS_LEFT") or "6")
+# Fallback cap, used ONLY when the panel reports no expiry at all, so remaining life cannot be
+# computed. A separate knob on purpose: it answers a different question ("in use too long to
+# trust?") and only because the primary signal is missing.
+RENEW_MAX_AGE_HOURS = float(os.environ.get("RENEW_MAX_AGE_HOURS") or "24")
 
 # CREDENTIAL SLOTS
 # Slot 1 is PROVIDER_URL/USER/PASS; slot N>1 is PROVIDER_<N>_*. Several accounts from the SAME
@@ -126,9 +142,9 @@ SLOT = 1
 
 # Keep the slots out of phase. If both were acquired together they would renew together and expire
 # together, so a single failed renewal cycle would take out ALL capacity at once — exactly the
-# outage the second slot exists to prevent. A slot's FIRST renewal is therefore pulled forward to
-# this age; afterwards it rides the normal cadence, permanently offset from the other slot.
-RENEW_STAGGER_HOURS = float(os.environ.get("RENEW_STAGGER_HOURS") or str(RENEW_EVERY_HOURS / 2))
+# outage the second slot exists to prevent. A slot's FIRST renewal therefore widens its runway by
+# this much, so it renews earlier; afterwards it rides the plain runway, permanently offset.
+RENEW_STAGGER_HOURS = float(os.environ.get("RENEW_STAGGER_HOURS") or "12")
 
 # Backoff after a FAILED acquisition. A slot with no credential at all would otherwise be retried
 # on every build — at a 4h build interval that is 6 signup attempts a day against a provider whose
@@ -378,21 +394,32 @@ def verify_credential(user: str, pwd: str, attempts: int = 6, wait: int = 10) ->
     return None, 0
 
 
-def cadence_for_slot() -> float:
-    """The age at which THIS slot's renewal falls due.
-
-    Slot 1 always rides the plain cadence. Another slot's FIRST renewal is pulled forward to
-    RENEW_STAGGER_HOURS so the slots stop expiring in lockstep; once it has renewed at least once
-    (generation > 0) it is already out of phase and uses the normal cadence.
-    """
-    if SLOT == 1:
-        return RENEW_EVERY_HOURS
+def slot_generation() -> int:
+    """How many times THIS slot has renewed, per the state file the build persists."""
     generation = slot_state().get("generation") or 0
     try:
-        generation = int(generation)
+        return int(generation)
     except (TypeError, ValueError):
-        generation = 0
-    return RENEW_EVERY_HOURS if generation > 0 else min(RENEW_STAGGER_HOURS, RENEW_EVERY_HOURS)
+        return 0
+
+
+def margin_for_slot() -> float:
+    """The remaining-life runway at which THIS slot's renewal falls due.
+
+    Slot 1 rides the plain runway. Another slot widens it by RENEW_STAGGER_HOURS on its FIRST
+    renewal only, so the slots stop expiring in lockstep; once it has renewed at least once
+    (generation > 0) it is already out of phase and uses the plain runway.
+    """
+    if SLOT == 1 or slot_generation() > 0:
+        return RENEW_WHEN_HOURS_LEFT
+    return RENEW_WHEN_HOURS_LEFT + RENEW_STAGGER_HOURS
+
+
+def max_age_for_slot() -> float:
+    """The fallback age cap for THIS slot, mirroring the stagger (see margin_for_slot)."""
+    if SLOT == 1 or slot_generation() > 0:
+        return RENEW_MAX_AGE_HOURS
+    return RENEW_MAX_AGE_HOURS + RENEW_STAGGER_HOURS
 
 
 def main() -> int:
@@ -414,23 +441,34 @@ def main() -> int:
     if if_needed and not force:
         panel, user, hours = current_credential_status()
         age = credential_age_hours()
-        cadence = cadence_for_slot()
-        usable = bool(panel) and (hours is None or hours > MIN_HOURS_LEFT)
-        due = age is not None and age >= cadence
+        margin = margin_for_slot()
+        max_age = max_age_for_slot()
+        usable = bool(panel)
+        if hours is None:
+            # No expiry reported, so "life remaining" cannot be evaluated and the age cap is the
+            # only signal left. With no recorded age either there is nothing to go on: adopt what
+            # is configured, because it authenticates RIGHT NOW and renewing instead would burn a
+            # trial on every build if the state file could not persist.
+            due = age is not None and age >= max_age
+            basis = (f"no expiry reported, age "
+                     f"{'unknown' if age is None else f'{age}h'} vs the {max_age}h cap")
+        else:
+            due = hours <= margin
+            basis = f"{hours}h of life left, at or under the {margin}h runway"
         if usable and not due:
             shown = "expiry not reported" if hours is None else f"{hours}h left"
             aged = "age unknown (bootstrap)" if age is None else f"age {age}h"
             log(f"  slot {SLOT}: reusing the credential already in force: {user} on {panel} "
                 f"({shown}, {aged})")
-            log(f"  no signup made — renewal falls due at {cadence}h old or {MIN_HOURS_LEFT}h left")
+            log(f"  no signup made — renewal falls due at {margin}h of life left")
             emit(status="reused", username=user, url=panel, slot=SLOT,
                  age_hours="" if age is None else age)
             return 0
         reasons = []
         if not usable:
             reasons.append(f"panel={panel}, hours_left={hours}")
-        if due:
-            reasons.append(f"age {age}h has reached the {cadence}h cadence")
+        elif due:
+            reasons.append(basis)
         log(f"  slot {SLOT}: renewal due ({'; '.join(reasons)})")
 
         # Respect the backoff before touching the provider's signup endpoint.

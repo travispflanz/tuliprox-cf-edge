@@ -166,14 +166,20 @@ what would make the provider treat this as automated abuse and withdraw free tri
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `RENEW_EVERY_HOURS` | `24` | replace a credential once it's a day old |
-| `MIN_HOURS_LEFT` | `6` | safety floor — renew regardless of age if life drops below this |
-| `RENEW_STAGGER_HOURS` | `12` | how far slot 2 is held out of phase with slot 1 |
+| `RENEW_WHEN_HOURS_LEFT` | `12` | **the only trigger** — replace the credential once this little life remains |
+| `RENEW_MAX_AGE_HOURS` | `24` | fallback age cap, used **only** when the panel reports no expiry at all |
+| `RENEW_STAGGER_HOURS` | `12` | extra runway a slot other than 1 gets on its *first* renewal |
 
-The floor is a net, not the engine: it covers a lost timestamp, a shorter-than-expected trial, or a
-previous renewal that failed. Because builds run every 4 hours and the floor is 6, **a renewal can
-fail once and still be retried while the account is alive** — that relationship is what makes the
-pair of numbers safe, so if you raise the build interval, raise the floor too.
+There is **one** rule: how much life is left. An earlier version also had an age cadence, and on a
+~36h trial that cadence always fired first — at 12h left, while the 6h "floor" beside it could only
+have fired at 6h left. So the floor was unreachable dead code that merely *looked* like a second
+safety net, and the pair of numbers hid which one actually mattered. Watching remaining life instead
+of wall-clock age also adapts to whatever trial length the provider really issues, rather than
+assuming one.
+
+**The threshold is also the window a build must land in.** Renewing when 12h remain means a build has
+to happen during the last 12 hours of the account's life, so the number must clear the interval this
+pipeline *really* sees — not the nominal one. That is why it is 12 and not 6.
 
 > ⚠️ **The real margin is 12 hours, and GitHub's cron does not reliably honour the 4-hour target.**
 > Renewal is due at 24h old and the trial dies at ~36h, so a build must land inside that 12h window.
@@ -182,9 +188,9 @@ pair of numbers safe, so if you raise the build interval, raise the floor too.
 > anything yet, but it leaves roughly an hour of margin: one worse gap and the streams fail while
 > the catalogue keeps serving.
 >
-> Two ways to buy margin, both tunable without a code change:
-> - Lower `RENEW_EVERY_HOURS` (e.g. `18`) — widens the window to 18h for ~0.3 extra signups/day.
-> - Raise `STALE_HOURS`' counterpart by watching for the **Stale deploy** alert, which fires past 10h.
+> This is exactly why `RENEW_WHEN_HOURS_LEFT` is **12**: the threshold has to exceed the delay the
+> pipeline really suffers, or the renewal is stepped clean over. Setting it to 6 on this clock would
+> not tighten the margin, it would *remove* it — a 6h window against a 10.6h gap has nothing to catch.
 >
 > A gap long enough to threaten this is reported by the monitor as a **Stale deploy** problem, so the
 > system does tell you. If you want the cadence actually guaranteed rather than merely watched, drive
@@ -449,18 +455,29 @@ The serving slot is reported in `X-Stream-Slot` on every stream response.
 
 ## 2.5 The credential renewal engine
 
-Renewal has three triggers, all in `build/acquire_trial.py`, evaluated per slot:
+Renewal asks **one** question, in `build/acquire_trial.py`, evaluated per slot:
 
-- **Cadence** — the credential in force is `RENEW_EVERY_HOURS` (24) old or older.
-- **Floor** — under `MIN_HOURS_LEFT` (6) of life remains, whatever its age. Keep this above the
-  build interval (4h) so a failed renewal still gets retried while the account is alive.
-- **Stagger** — a slot other than 1 has its *first* renewal pulled forward to
-  `RENEW_STAGGER_HOURS` (12), so the slots stop expiring in lockstep. After that first rotation it
-  is out of phase and uses the normal cadence; `generation` in the state file is what distinguishes
-  a freshly-bootstrapped slot from one that has already rotated.
+- **Runway** — does the credential have `RENEW_WHEN_HOURS_LEFT` (12) or less of life left? This is
+  the only trigger. It is measured from the panel's own reported expiry, so it tracks the trial
+  length actually issued rather than a wall-clock assumption about it.
+- **Stagger** — a slot other than 1 adds `RENEW_STAGGER_HOURS` (12) to its runway on its *first*
+  renewal, so it renews earlier and the slots stop expiring in lockstep. After that rotation it is
+  out of phase and rides the plain runway; `generation` in the state file distinguishes a
+  freshly-bootstrapped slot from one that has already rotated.
+- **Unreadable expiry** — a fallback, not a co-equal rule. When the panel reports no expiry at all,
+  remaining life cannot be computed, so the age is checked against `RENEW_MAX_AGE_HOURS` (24)
+  instead. It is a separate knob because it answers a different question ("in use too long to
+  trust?") and is asked only because the primary signal is missing.
 
-An **unknown age is never treated as fresh.** Assuming fresh is precisely what would cause a
-renewal to be skipped forever, so an unreadable or missing timestamp falls back to the floor.
+An **unknown age is never treated as fresh.** Assuming fresh is what would skip a renewal forever, so
+a missing or unreadable timestamp falls back to the age cap. The one case that deliberately adopts
+what is configured is when the expiry *and* the age are both unreadable: the credential
+authenticates right now, and renewing instead would burn a trial on every build if the state file
+could not persist.
+
+**Age alone never renews anything.** A credential with life left is kept however old it is — that is
+what stops an unexpectedly long trial from being thrown away early, and it is pinned by
+`verify_renewal_policy.py`.
 
 ### Why the credential can't live in a repository secret
 
@@ -591,8 +608,9 @@ always deploy from the repo root.
 |---|---|---|
 | `CLIENT_USER`, `CLIENT_PASS` | — | **your playlist login.** Required. Set with `gh variable set` |
 | `CLIENT_2_USER`, `CLIENT_2_PASS` | unset | second viewer's login, pinned to provider slot 2. Set both or neither |
-| `RENEW_EVERY_HOURS` | `24` | renewal cadence |
-| `MIN_HOURS_LEFT` | `6` | renewal safety floor (keep above the 4h build interval) |
+| `RENEW_WHEN_HOURS_LEFT` | `12` | renew at or below this much remaining life (the only trigger) |
+| `RENEW_MAX_AGE_HOURS` | `24` | age cap, used only when the panel reports no expiry |
+| `STALE_HOURS` | `10` | monitor: alert if the newest deploy is older than this |
 | `RENEW_STAGGER_HOURS` | `12` | how far slot 2 is held out of phase with slot 1 |
 | `ACQUIRE_RETRY_HOURS` | `12` | wait this long after a FAILED signup before retrying |
 | `TRIAL_POLL_TRIES` | `120` | status polls (×1.5s) to await the provider's task queue |

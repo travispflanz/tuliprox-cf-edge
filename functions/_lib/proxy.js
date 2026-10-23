@@ -24,6 +24,7 @@ import {
   upstreamConfigured,
   healthySlots,
   pickSlot,
+  clientLogins,
   streamUrlFor,
 } from './auth.js';
 import { text, unauthorized, serverError, options } from './respond.js';
@@ -55,22 +56,32 @@ export async function handleStream(context, kind) {
   const pre = options(request);
   if (pre) return pre;
 
-  if (!env.CLIENT_USER || !env.CLIENT_PASS) return serverError('Server Misconfigured');
+  const logins = clientLogins(env);
+  if (!logins.length) return serverError('Server Misconfigured');
   if (!upstreamConfigured(env)) return serverError('UPSTREAM_URL/UPSTREAM_USER/UPSTREAM_PASS not set');
 
   const segs = Array.isArray(params.path) ? params.path : [params.path].filter(Boolean);
   if (segs.length < 3) return text('400 Bad stream path', 400);
 
   const [u, p, file] = segs;
-  if (!safeEqual(u, env.CLIENT_USER) || !safeEqual(p, env.CLIENT_PASS)) return unauthorized();
+  // Match against EVERY configured login, not just the first. Credentials arrive in the path here
+  // (not a query string), so this is the stream side of the same auth — checking only login 1
+  // would 401 every stream belonging to the second viewer.
+  let login = null;
+  for (const candidate of logins) {
+    if (safeEqual(u, candidate.user) && safeEqual(p, candidate.pass)) login = candidate;
+  }
+  if (!login) return unauthorized();
 
   const m = /^([0-9]+)\.([A-Za-z0-9]{1,5})$/.exec(file);
   if (!m) return text('400 Bad stream id', 400);
   const [, id, ext] = m;
 
   // Choose this viewer's provider account, then order the rest behind it as failover candidates.
+  // The login decides it: two devices in one home share a public IP, so nothing about the
+  // connection can tell them apart.
   const candidates = healthySlots(env);
-  const chosen = pickSlot(request, candidates);
+  const chosen = pickSlot(request, candidates, login);
   const ordered = [chosen, ...candidates.filter((c) => c.slot !== chosen.slot)];
   const target = streamUrlFor(chosen, kind, id, ext);
 

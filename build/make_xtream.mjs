@@ -147,26 +147,54 @@ for (const [cid, arr] of byCat) {
 fs.writeFileSync(path.join(dataDir, 'empty.json'), '[]');
 fs.writeFileSync(path.join(dataDir, 'emptyobj.json'), '{}');
 
-// ---------------------------------------------------------------- playlist.m3u
+// ---------------------------------------------------------------- playlist.m3u (one per login)
 // Rewrite upstream URLs so the player only ever talks to the edge. Because the
 // upstream user/pass are stripped here, this file leaks nothing but our own client creds.
-const tvg = `${EDGE}/xmltv.php?username=${encodeURIComponent(CU)}&password=${encodeURIComponent(CP)}`;
-const m3uLines = [
-  `#EXTM3U url-tvg="${tvg}" x-tvg-url="${tvg}"`,
-  `# Tuliprox Edge — ${streams.length} channels`,
+//
+// ONE FILE PER CLIENT LOGIN. The credentials are baked into all ~13k stream URLs, so a single
+// shared playlist would hand viewer 2 a list full of viewer 1's credentials — every stream would
+// then authenticate as login 1, land on provider slot 1, and both viewers would fight over one
+// `max_connections=1` account. Baking per login keeps `get.php` a zero-CPU asset passthrough
+// (rewriting ~5 MB per request would blow Cloudflare's ~10 ms CPU budget).
+const LOGINS = [
+  { n: 1, user: CU, pass: CP, file: 'playlist.m3u' },
+  ...(process.env.CLIENT_2_USER && process.env.CLIENT_2_PASS
+    ? [{
+        n: 2,
+        user: process.env.CLIENT_2_USER,
+        pass: process.env.CLIENT_2_PASS,
+        file: 'playlist-2.m3u',
+      }]
+    : []),
 ];
-for (const s of streams) {
-  const attrs = [
-    `tvg-id="${s.epg_channel_id}"`,
-    `tvg-name="${s.name.replace(/"/g, "'")}"`,
-    `group-title="${s._g.replace(/"/g, "'")}"`,
-    s.stream_icon ? `tvg-logo="${s.stream_icon}"` : '',
-    s._n ? `tvg-chno="${s._n}"` : '',
-  ].filter(Boolean).join(' ');
-  m3uLines.push(`#EXTINF:-1 ${attrs},${s.name}`);
-  m3uLines.push(s.direct_source);
+
+const attrsFor = (s) => [
+  `tvg-id="${s.epg_channel_id}"`,
+  `tvg-name="${s.name.replace(/"/g, "'")}"`,
+  `group-title="${s._g.replace(/"/g, "'")}"`,
+  s.stream_icon ? `tvg-logo="${s.stream_icon}"` : '',
+  s._n ? `tvg-chno="${s._n}"` : '',
+].filter(Boolean).join(' ');
+
+for (const login of LOGINS) {
+  const lu = encodeURIComponent(login.user);
+  const lp = encodeURIComponent(login.pass);
+  const tvg = `${EDGE}/xmltv.php?username=${lu}&password=${lp}`;
+  const lines = [
+    `#EXTM3U url-tvg="${tvg}" x-tvg-url="${tvg}"`,
+    `# Tuliprox Edge — ${streams.length} channels (login ${login.n})`,
+  ];
+  for (const s of streams) {
+    lines.push(`#EXTINF:-1 ${attrsFor(s)},${s.name}`);
+    // Re-derive rather than reusing s.direct_source, which carries login 1's credentials.
+    lines.push(s.direct_source.replace(
+      `/live/${encodeURIComponent(CU)}/${encodeURIComponent(CP)}/`,
+      `/live/${lu}/${lp}/`,
+    ));
+  }
+  fs.writeFileSync(path.join(OUT, login.file), lines.join('\n') + '\n');
+  console.log(`  playlist for login ${login.n}: ${login.file}`);
 }
-fs.writeFileSync(path.join(OUT, 'playlist.m3u'), m3uLines.join('\n') + '\n');
 
 // ---------------------------------------------------------------- EPG
 // Shipped PLAIN and left to Cloudflare's automatic compression.

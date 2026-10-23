@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
@@ -87,16 +88,37 @@ def env_lines(slot: int, cred: dict) -> list[str]:
     return out
 
 
-def cmd_seed(args: argparse.Namespace) -> int:
-    """Pick each slot's starting credential: persisted state wins over the repository secret.
+def fingerprint(cred: dict) -> str:
+    """A short, non-reversible marker for a configured seed value.
 
-    The persisted one wins because it is THAT credential's real age which decides when renewal is
-    due. An incomplete persisted entry degrades to the secret with a warning rather than taking a
-    half-populated credential — a half-filled slot would fail every stream it was handed.
+    Lets the next build notice that a HUMAN edited the configured credential, without the state
+    file having to carry the seed itself.
+    """
+    blob = "|".join(str(cred.get(f.lower()) or "") for f in FIELDS)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16] if blob.strip("|") else ""
+
+
+def cmd_seed(args: argparse.Namespace) -> int:
+    """Pick each slot's starting credential.
+
+    Normally the PERSISTED credential wins, because it is THAT credential's real age which decides
+    when renewal is due — and because a repository secret cannot be rewritten by the workflow, so
+    it would otherwise age out and trigger a needless signup on every build.
+
+    THE EXCEPTION IS A HUMAN EDIT. If the configured value differs from the one this system last
+    saw configured, someone changed it deliberately — to take manual control when automatic
+    acquisition is broken — and it must win. Without this, typing a fresh credential into the
+    repository settings does nothing until the cached one dies, which is the opposite of a usable
+    manual override. `PREFER_SEED=1` forces the same behaviour explicitly.
+
+    An incomplete persisted entry degrades to the configured value with a warning rather than
+    taking a half-populated credential — a half-filled slot fails every stream it is handed.
     """
     state = load()
     lines: list[str] = []
     configured: list[int] = []
+    forced = os.environ.get("PREFER_SEED", "").strip().lower() in ("1", "true", "yes")
+    prints: dict[str, str] = {}
 
     for slot in SLOTS:
         sfx = suffix(slot)
@@ -104,13 +126,26 @@ def cmd_seed(args: argparse.Namespace) -> int:
         stored = state.get(str(slot)) or {}
         stored_cred = {f.lower(): str(stored.get(f.lower()) or "") for f in FIELDS}
 
-        if all(stored_cred.values()):
+        seed_print = fingerprint(secret)
+        prints[str(slot)] = seed_print
+        # An absent record means "never tracked", NOT "changed" — otherwise the first build after
+        # this feature ships would treat every credential as hand-edited and override itself.
+        known_print = str(stored.get("seed_fingerprint") or "")
+        edited = bool(seed_print) and bool(known_print) and seed_print != known_print
+
+        if all(secret.values()) and (forced or edited):
+            cred = secret
+            source = ("configured value (PREFER_SEED was set)" if forced
+                      else "configured value — IT CHANGED since the last build, so a human edited "
+                           "it and it takes precedence")
+            print(f"::notice::slot {slot}: using the hand-configured provider credential")
+        elif all(stored_cred.values()):
             cred, source = stored_cred, "the credential persisted by the previous build"
         else:
             if any(stored_cred.values()):
                 print(f"::warning::slot {slot}: the persisted credential is incomplete "
-                      f"— falling back to the repository secret")
-            cred, source = secret, "repository secret (bootstrap)"
+                      f"— falling back to the configured value")
+            cred, source = secret, "configured value (bootstrap)"
 
         if all(cred.values()):
             configured.append(slot)
@@ -121,6 +156,10 @@ def cmd_seed(args: argparse.Namespace) -> int:
             print(f"slot {slot}: no credential yet — acquisition will mint one")
 
     print(f"slots with a starting credential: {','.join(map(str, configured)) or 'none'}")
+    # Hand the observed seed fingerprints to `record`, so the NEXT build can tell whether the
+    # configured value changed. Passed through the environment file rather than recomputed there,
+    # because record() sees the resolved credential and no longer knows what was configured.
+    write_env([f"SEED_FINGERPRINT_{slot}={fp}" for slot, fp in prints.items() if fp], args.out)
     write_env(lines, args.out)
     return 0
 
@@ -151,6 +190,9 @@ def cmd_record(args: argparse.Namespace) -> int:
             # acquired would be retried on EVERY build, which is precisely the signup churn the
             # whole design exists to avoid.
             entry = dict(prev)
+            fp = os.environ.get(f"SEED_FINGERPRINT_{slot}", "")
+            if fp:
+                entry["seed_fingerprint"] = fp
             if status:
                 entry["last_status"] = status
                 entry["last_attempt_at"] = now_stamp()
@@ -180,6 +222,10 @@ def cmd_record(args: argparse.Namespace) -> int:
             "source": status,
             "last_status": status or prev.get("last_status", ""),
             "last_attempt_at": now_stamp() if status else prev.get("last_attempt_at", ""),
+            # What was CONFIGURED this run (not what is in force). The next build compares against
+            # it to notice a hand edit; losing it would make the manual override undetectable.
+            "seed_fingerprint": os.environ.get(f"SEED_FINGERPRINT_{slot}",
+                                               prev.get("seed_fingerprint", "")),
         }
         if status in ("ok", "reused"):
             healthy.append(slot)

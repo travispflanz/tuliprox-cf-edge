@@ -12,6 +12,10 @@ on:
         description: "Force a brand-new provider trial signup (only for testing the acquisition path)"
         type: boolean
         default: false
+      prefer_manual:
+        description: "Use the PROVIDER_* values configured in repo settings instead of the cached ones"
+        type: boolean
+        default: false
   repository_dispatch:
     types: [credentials-rotated]
   push:
@@ -32,6 +36,29 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Mask the credentials BEFORE any other step can echo them.
+      #
+      # GitHub auto-masks repository SECRETS but NOT repository VARIABLES, and these are
+      # deliberately variables so they can be read and hand-edited in the UI. Without this they
+      # would appear verbatim in every later step's `env:` dump — which is exactly how a provider
+      # password leaked into a run log once already. Masking is independent of the store, so the
+      # readability we wanted costs nothing in log hygiene.
+      - name: Mask credentials in the log
+        env:
+          V1: ${{ vars.PROVIDER_PASS }}
+          V2: ${{ vars.PROVIDER_USER }}
+          V3: ${{ vars.PROVIDER_2_PASS }}
+          V4: ${{ vars.PROVIDER_2_USER }}
+          V5: ${{ vars.CLIENT_PASS }}
+          V6: ${{ vars.CLIENT_2_PASS }}
+        run: |
+          for v in V1 V2 V3 V4 V5 V6; do
+            val="${!v}"
+            # Skip trivially short values: masking those would redact unrelated log text.
+            if [ -n "$val" ] && [ "${#val}" -gt 3 ]; then echo "::add-mask::$val"; fi
+          done
+          echo "masked the credential values that are stored as variables"
+
       # Pinned to the current majors: v4/v3 still target Node 20, which GitHub is already
       # force-running on Node 24 and will eventually retire (deprecation warning in every run).
       - uses: actions/checkout@v7
@@ -55,11 +82,13 @@ jobs:
       # the provider's API, so a missing or expired provider account no longer stops a build.
       - name: Verify required secrets are populated
         env:
-          CLIENT_USER: ${{ secrets.CLIENT_USER }}
-          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
-          PROVIDER_URL: ${{ secrets.PROVIDER_URL }}
-          PROVIDER_USER: ${{ secrets.PROVIDER_USER }}
-          PROVIDER_PASS: ${{ secrets.PROVIDER_PASS }}
+          CLIENT_USER: ${{ vars.CLIENT_USER || secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ vars.CLIENT_PASS || secrets.CLIENT_PASS }}
+          CLIENT_2_USER: ${{ vars.CLIENT_2_USER || secrets.CLIENT_2_USER }}
+          CLIENT_2_PASS: ${{ vars.CLIENT_2_PASS || secrets.CLIENT_2_PASS }}
+          PROVIDER_URL: ${{ vars.PROVIDER_URL || secrets.PROVIDER_URL }}
+          PROVIDER_USER: ${{ vars.PROVIDER_USER || secrets.PROVIDER_USER }}
+          PROVIDER_PASS: ${{ vars.PROVIDER_PASS || secrets.PROVIDER_PASS }}
         run: |
           set -euo pipefail
           missing=""
@@ -67,8 +96,17 @@ jobs:
             if [ -z "${!v}" ]; then missing="$missing $v"; fi
           done
           if [ -n "$missing" ]; then
-            echo "::error::these required repository secrets are empty or unset:$missing"
-            echo "Set them with: gh secret set NAME  (an empty secret is indistinguishable from an unset one at runtime)"
+            echo "::error::these required settings are empty or unset:$missing"
+            echo "Set either a repository VARIABLE (readable and editable in the UI, which is what"
+            echo "you want for a playlist login you need to look up) or a SECRET (write-only):"
+            echo "  gh variable set NAME --body VALUE     # or:  gh secret set NAME"
+            echo "A variable wins when both exist. An empty value is indistinguishable from unset."
+            exit 1
+          fi
+          # A half-set second login would authenticate nobody but still look configured.
+          if { [ -n "${CLIENT_2_USER:-}" ] && [ -z "${CLIENT_2_PASS:-}" ]; } ||
+             { [ -z "${CLIENT_2_USER:-}" ] && [ -n "${CLIENT_2_PASS:-}" ]; }; then
+            echo "::error::CLIENT_2_USER and CLIENT_2_PASS must be set together (or both left unset)"
             exit 1
           fi
           if [ -z "${PROVIDER_USER:-}" ] || [ -z "${PROVIDER_PASS:-}" ]; then
@@ -103,12 +141,13 @@ jobs:
       - name: Seed provider credentials from the persisted file or repository secrets
         env:
           CRED_FILE: .cred/provider.json
-          SEED_URL: ${{ secrets.PROVIDER_URL }}
-          SEED_USER: ${{ secrets.PROVIDER_USER }}
-          SEED_PASS: ${{ secrets.PROVIDER_PASS }}
-          SEED_2_URL: ${{ secrets.PROVIDER_2_URL }}
-          SEED_2_USER: ${{ secrets.PROVIDER_2_USER }}
-          SEED_2_PASS: ${{ secrets.PROVIDER_2_PASS }}
+          SEED_URL: ${{ vars.PROVIDER_URL || secrets.PROVIDER_URL }}
+          SEED_USER: ${{ vars.PROVIDER_USER || secrets.PROVIDER_USER }}
+          SEED_PASS: ${{ vars.PROVIDER_PASS || secrets.PROVIDER_PASS }}
+          SEED_2_URL: ${{ vars.PROVIDER_2_URL || secrets.PROVIDER_2_URL }}
+          SEED_2_USER: ${{ vars.PROVIDER_2_USER || secrets.PROVIDER_2_USER }}
+          SEED_2_PASS: ${{ vars.PROVIDER_2_PASS || secrets.PROVIDER_2_PASS }}
+          PREFER_SEED: ${{ inputs.prefer_manual && '1' || '' }}
         run: python3 build/credential_state.py seed
 
       # No email, OTP, captcha or browser: the provider returns the credentials directly in its
@@ -256,8 +295,10 @@ jobs:
           M3U_NAME: edge_list.m3u
           TARGET_DIR: edge_list
           EDGE_ORIGIN: ${{ env.EDGE_ORIGIN }}
-          CLIENT_USER: ${{ secrets.CLIENT_USER }}
-          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
+          CLIENT_USER: ${{ vars.CLIENT_USER || secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ vars.CLIENT_PASS || secrets.CLIENT_PASS }}
+          CLIENT_2_USER: ${{ vars.CLIENT_2_USER || secrets.CLIENT_2_USER }}
+          CLIENT_2_PASS: ${{ vars.CLIENT_2_PASS || secrets.CLIENT_2_PASS }}
           EPG_SRC: epg.xml
         run: node build/make_xtream.mjs
 
@@ -311,13 +352,24 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CU: ${{ secrets.CLIENT_USER }}
-          CP: ${{ secrets.CLIENT_PASS }}
+          CU: ${{ vars.CLIENT_USER || secrets.CLIENT_USER }}
+          CP: ${{ vars.CLIENT_PASS || secrets.CLIENT_PASS }}
+          C2U: ${{ vars.CLIENT_2_USER || secrets.CLIENT_2_USER }}
+          C2P: ${{ vars.CLIENT_2_PASS || secrets.CLIENT_2_PASS }}
         run: |
           set -euo pipefail
           put() { printf '%s' "$2" | npx --yes wrangler@4 pages secret put "$1" --project-name "$PAGES_PROJECT" >/dev/null; }
           put CLIENT_USER "$CU"
           put CLIENT_PASS "$CP"
+          # Login 2 is optional; push it only when complete so a half-set login cannot
+          # authenticate and then be pinned to a slot it has no credentials for.
+          if [ -n "${C2U:-}" ] && [ -n "${C2P:-}" ]; then
+            put CLIENT_2_USER "$C2U"
+            put CLIENT_2_PASS "$C2P"
+            echo "playlist login 2 synced (second simultaneous viewer enabled)"
+          else
+            echo "playlist login 2 not configured — one viewer at a time"
+          fi
           put UPSTREAM_USER "${UPSTREAM_USER:?}"
           put UPSTREAM_PASS "${UPSTREAM_PASS:?}"
           put UPSTREAM_URL "${UPSTREAM_URL:?}"
@@ -346,8 +398,10 @@ jobs:
       - name: Smoke-test the live edge
         env:
           BASE: ${{ env.EDGE_ORIGIN }}
-          CLIENT_USER: ${{ secrets.CLIENT_USER }}
-          CLIENT_PASS: ${{ secrets.CLIENT_PASS }}
+          CLIENT_USER: ${{ vars.CLIENT_USER || secrets.CLIENT_USER }}
+          CLIENT_PASS: ${{ vars.CLIENT_PASS || secrets.CLIENT_PASS }}
+          CLIENT_2_USER: ${{ vars.CLIENT_2_USER || secrets.CLIENT_2_USER }}
+          CLIENT_2_PASS: ${{ vars.CLIENT_2_PASS || secrets.CLIENT_2_PASS }}
         run: |
           set -euo pipefail
           # Same script that gates local changes, so CI and local can never drift apart.

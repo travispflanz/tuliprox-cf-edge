@@ -180,6 +180,72 @@ r = await run({ ...CLIENT, ...SLOT1 }, req('203.0.113.9'), () => status(401));
 check('with one slot there is nothing to fail over to -> single attempt',
   r.attempts.length === 1, String(r.attempts.length));
 
+// ---------------------------------------------------------------------------------------------
+// PER-LOGIN PINNING — the bug this section exists for
+//
+// Slot choice used to hash the client IP. Two devices in the SAME HOME share one public IP, so
+// they hashed to the same slot and competed for one `max_connections=1` account: the second
+// viewer failed, which is the exact case two slots exist to serve. Only the login can tell two
+// devices apart behind NAT, so login N is pinned to slot N. Every assertion below uses ONE
+// shared IP on purpose — that is the real-world topology the old design got wrong.
+console.log('\n  -- per-login pinning (two devices, one public IP) --');
+const TWO_LOGINS = { ...BOTH, CLIENT_2_USER: 'cu2', CLIENT_2_PASS: 'cp2' };
+const HOME_IP = '198.51.100.7';
+
+function reqAs(user, pass, ip = HOME_IP) {
+  const headers = new Headers();
+  headers.set('CF-Connecting-IP', ip);
+  headers.set('User-Agent', 'test');
+  return new Request(`https://edge.example/live/${user}/${pass}/55.ts`, { headers });
+}
+
+r = await run(TWO_LOGINS, reqAs('cu', 'cp'), () => ok());
+check('login 1 is served by slot 1', r.response.headers.get('X-Stream-Slot') === '1',
+  r.response.headers.get('X-Stream-Slot'));
+const slotFor1 = r.response.headers.get('X-Stream-Slot');
+
+r = await run(TWO_LOGINS, reqAs('cu2', 'cp2'), () => ok());
+check('login 2 is served by slot 2', r.response.headers.get('X-Stream-Slot') === '2',
+  r.response.headers.get('X-Stream-Slot'));
+check('THE REGRESSION: two devices on ONE public IP get DIFFERENT provider accounts',
+  slotFor1 !== r.response.headers.get('X-Stream-Slot'),
+  `login1=${slotFor1} login2=${r.response.headers.get('X-Stream-Slot')}`);
+
+// The second credential must actually be used, or both viewers still share one account.
+r = await run(TWO_LOGINS, reqAs('cu2', 'cp2'), () => ok());
+check('login 2 streams with slot 2\'s PROVIDER credentials',
+  r.attempts[0].includes('/u2/k2/'), r.attempts[0]);
+r = await run(TWO_LOGINS, reqAs('cu', 'cp'), () => ok());
+check('login 1 streams with slot 1\'s PROVIDER credentials',
+  r.attempts[0].includes('/u1/k1/'), r.attempts[0]);
+
+// Stability per login, since a wobble would bounce a player between accounts mid-stream.
+const seen = new Set();
+for (let i = 0; i < 4; i++) {
+  r = await run(TWO_LOGINS, reqAs('cu2', 'cp2'), () => ok());
+  seen.add(r.response.headers.get('X-Stream-Slot'));
+}
+check('a login\'s slot is stable across requests', seen.size === 1, [...seen].join(','));
+
+r = await run(TWO_LOGINS, reqAs('cu2', 'wrong'), () => ok());
+check('login 2 with a wrong password -> 401', r.response.status === 401,
+  String(r.response.status));
+r = await run(TWO_LOGINS, reqAs('nobody', 'cp2'), () => ok());
+check('an unknown username -> 401', r.response.status === 401, String(r.response.status));
+
+// Login 1 must keep working identically when no second login is configured.
+r = await run(BOTH, reqAs('cu', 'cp'), () => ok());
+check('single-login setup is unaffected (login 1 still streams)',
+  r.response.status === 200, String(r.response.status));
+r = await run(BOTH, reqAs('cu2', 'cp2'), () => ok());
+check('a login that is not configured cannot stream -> 401',
+  r.response.status === 401, String(r.response.status));
+
+// When a login's own slot is dead it must still not collide with the other login's slot.
+r = await run({ ...TWO_LOGINS, UPSTREAM_HEALTHY_SLOTS: '1' }, reqAs('cu2', 'cp2'), () => ok());
+check('login 2 falls back to a healthy slot when slot 2 is dead',
+  r.response.headers.get('X-Stream-Slot') === '1', r.response.headers.get('X-Stream-Slot'));
+
 console.log(`\n=== ${checks - failures.length}/${checks} checks passed ===`);
 for (const failure of failures) console.log(`FAILED: ${failure}`);
 process.exit(failures.length ? 1 : 0);

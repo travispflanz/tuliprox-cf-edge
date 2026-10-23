@@ -134,8 +134,8 @@ print("\n=== bootstrap: no state yet ===")
 w = Workspace()
 p = w.run("seed", **seed_env(slot1=S1, slot2=S2))
 check("seed succeeds on a clean workspace", p.returncode == 0, p.stderr.strip()[:200])
-check("it reports bootstrapping from the secret", "repository secret (bootstrap)" in p.stdout,
-      p.stdout.strip()[:160])
+check("it reports bootstrapping from the configured value",
+      "configured value (bootstrap)" in p.stdout, p.stdout.strip()[:160])
 env = w.env()
 check("both slots are exported under PROVIDER_* and UPSTREAM_*",
       env.get("PROVIDER_URL") == S1[0] and env.get("UPSTREAM_2_USER") == S2[1], str(env)[:200])
@@ -188,6 +188,56 @@ check("seed prefers the persisted credential for every slot",
       str(env)[:200])
 check("it says where each credential came from",
       p.stdout.count("persisted by the previous build") == 2, p.stdout.strip()[:200])
+
+print("\n=== manual override: a hand-edited credential must actually take effect ===")
+# The whole point of keeping these as readable repository VARIABLES is to be able to type a fresh
+# credential in when automatic acquisition breaks. The persisted credential normally wins, so
+# without change-detection a hand edit would be silently ignored until the cached one expired —
+# the opposite of a usable manual override.
+wM = Workspace()
+p = wM.run("seed", **seed_env(S1))
+first_print = wM.env().get("SEED_FINGERPRINT_1", "")
+check("seeding reports a fingerprint of the configured value", bool(first_print), str(wM.env()))
+wM.run("record", **record_env(S1, status="ok"), SEED_FINGERPRINT_1=first_print)
+check("record persists it for the next build",
+      wM.state()["1"].get("seed_fingerprint") == first_print, str(wM.state()["1"]))
+
+# Unchanged configuration: the persisted credential must still win, or every build would discard
+# the measured age and sign up needlessly.
+p = wM.run("seed", **seed_env(S1))
+check("an UNCHANGED configured value does not override the persisted one",
+      "persisted by the previous build" in p.stdout, p.stdout.strip()[:200])
+
+# Now simulate the human editing the variable in the GitHub UI.
+EDITED = ("http://p1.example", "HANDTYPED", "handtypedpass")
+p = wM.run("seed", **seed_env(EDITED))
+check("a CHANGED configured value wins over the cache",
+      wM.env().get("PROVIDER_USER") == "HANDTYPED", str(wM.env())[:200])
+check("and says why, so the log explains itself",
+      "a human edited it" in p.stdout and "::notice::" in p.stdout, p.stdout.strip()[:240])
+
+# The explicit escape hatch (the prefer_manual dispatch input).
+p = wM.run("seed", PREFER_SEED="1", **seed_env(S1))
+check("PREFER_SEED=1 forces the configured value even when unchanged",
+      wM.env().get("PROVIDER_USER") == S1[1] and "PREFER_SEED was set" in p.stdout,
+      p.stdout.strip()[:200])
+
+# First build after this feature ships: nothing was ever fingerprinted, which must NOT read as
+# "edited" or the system would override itself out of the blue.
+wN = Workspace()
+wN.write_state({"slots": {"1": {"url": "http://stored1", "user": "STORED1", "pass": "sp1",
+                               "acquired_at": "2026-01-01T00:00:00Z"}}})
+p = wN.run("seed", **seed_env(S1))
+check("an untracked fingerprint is NOT treated as a human edit",
+      wN.env().get("PROVIDER_USER") == "STORED1", str(wN.env())[:160])
+
+# A half-typed override must not be adopted, or it authenticates nothing.
+wO = Workspace()
+wO.write_state({"slots": {"1": {"url": "http://stored1", "user": "STORED1", "pass": "sp1",
+                                "seed_fingerprint": "deadbeefdeadbeef"}}})
+p = wO.run("seed", SEED_URL="http://new", SEED_USER="ONLYUSER", SEED_PASS="")
+check("an incomplete hand edit is ignored in favour of the working credential",
+      wO.env().get("PROVIDER_USER") == "STORED1", str(wO.env())[:160])
 
 print("\n=== degradation, never a broken build ===")
 w3 = Workspace()

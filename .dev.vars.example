@@ -7,8 +7,17 @@
 # In production none of these are set by hand: every build syncs them to the
 # Pages project after deploying.
 
+# --- playlist login 1 (required) ---------------------------------------------
 CLIENT_USER="edgeUser123"
 CLIENT_PASS="edgePass456"
+
+# --- playlist login 2 (optional) ---------------------------------------------
+# The SECOND viewer's own login, pinned to provider slot 2. This is what makes
+# two simultaneous viewers work: two devices in one home share a public IP, so
+# the edge cannot tell them apart from the connection alone — the login is the
+# only thing that can. Leave blank for a single viewer.
+CLIENT_2_USER="edgeUser456"
+CLIENT_2_PASS="edgePass789"
 
 # --- provider slot 1 (required) ----------------------------------------------
 UPSTREAM_URL="http://provider.example.com"

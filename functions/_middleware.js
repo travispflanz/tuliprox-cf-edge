@@ -7,7 +7,7 @@
  * to gate them. Internal `env.ASSETS.fetch()` calls from our own Functions bypass middleware,
  * which is what lets get.php/xmltv.php read the same files after doing their own auth check.
  */
-import { isAuthorized } from './_lib/auth.js';
+import { clientLogins, isAuthorized } from './_lib/auth.js';
 import { unauthorized } from './_lib/respond.js';
 
 export async function onRequest(context) {
@@ -17,10 +17,13 @@ export async function onRequest(context) {
   const gated =
     pathname.startsWith('/_data/') ||
     pathname === '/_data' ||
-    pathname === '/playlist.m3u';
+    // Every per-login playlist variant, not just login 1's. A prefix match rather than a literal
+    // list, so adding a third login can never leave its playlist world-readable by omission.
+    /^\/playlist(-\d+)?\.m3u$/.test(pathname);
 
   if (gated) {
-    if (!env.CLIENT_USER || !env.CLIENT_PASS) return unauthorized();
+    // Fail closed when NO login is configured — not just when login 1 is missing.
+    if (!clientLogins(env).length) return unauthorized();
     if (!(await isAuthorized(request, env))) return unauthorized();
   }
 

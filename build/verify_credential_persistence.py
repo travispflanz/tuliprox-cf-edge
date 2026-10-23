@@ -65,8 +65,13 @@ class Workspace:
         # Strip any ambient credential vars so a real environment can never leak into a case.
         clean = {k: v for k, v in os.environ.items()
                  if not k.startswith(("PROVIDER", "UPSTREAM", "SEED", "STATUS", "EXPIRES"))}
+        # Drop GITHUB_ACTIONS too, so masking cases behave identically here and in CI. Inheriting
+        # it made the "no masking outside Actions" case pass locally and fail in Actions.
+        clean.pop("GITHUB_ACTIONS", None)
         clean.update({"CRED_FILE": str(self.cred), **env})
         clean.pop("GITHUB_ENV", None)
+        if clean.get("GITHUB_ACTIONS") == "":
+            clean.pop("GITHUB_ACTIONS")
         return subprocess.run([sys.executable, str(SCRIPT), command, "--out", str(self.out)],
                               cwd=REPO, capture_output=True, text=True, env=clean)
 
@@ -262,7 +267,7 @@ check("seeding emits ::add-mask:: for every credential it exports",
 check("the masks cover the passwords specifically",
       f"::add-mask::{S1[2]}" in p.stdout and f"::add-mask::{S2[2]}" in p.stdout,
       p.stdout.strip()[:200])
-p = wC.run("seed", **seed_env(S1))
+p = wC.run("seed", GITHUB_ACTIONS="", **seed_env(S1))
 check("and no mask noise outside Actions", "::add-mask::" not in p.stdout,
       p.stdout.strip()[:160])
 

@@ -75,8 +75,13 @@ def offline() -> None:
     for script in ("build/verify_renewal_policy.py", "build/verify_credential_persistence.py"):
         proc = run([sys.executable, script])
         summary = next((ln for ln in proc.stdout.splitlines() if "checks passed" in ln), "")
+        # Surface the harness's OWN failure lines. Reporting only the count forces whoever sees a
+        # red build to go digging through raw Actions logs to learn which assertion broke.
+        detail = " | ".join(ln.strip() for ln in proc.stdout.splitlines()
+                            if ln.startswith("FAILED:") or "  FAIL  " in ln)
         record(script, PASS if proc.returncode == 0 else FAIL,
-               f"rc={proc.returncode} {summary or proc.stdout[-200:]} {proc.stderr[-200:]}".strip())
+               f"rc={proc.returncode} {summary or proc.stdout[-200:]} "
+               f"{detail} {proc.stderr[-200:]}".strip())
 
     print("\n=== offline: python syntax ===")
     py = sorted(p.relative_to(REPO).as_posix() for p in (REPO / "build").glob("*.py"))

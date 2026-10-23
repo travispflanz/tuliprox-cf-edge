@@ -16,10 +16,10 @@ step at all. A second scheduled workflow watches everything and opens a GitHub i
 | **Cloudflare** | [dash.cloudflare.com](https://dash.cloudflare.com) → Workers & Pages → `tuliprox-edge-gateway` |
 | **Currently serving** | ~9–10k live channels across ~120–165 categories, with EPG |
 
-> Channel and category counts move whenever the provider's lineup changes (observed between 9,026
-> and 13,651 depending on the filter and the day), so this document gives ranges rather than a
-> figure that is stale the moment it is written. For the live number, see the latest build's summary
-> or `get_live_streams` ([§1.3](#13-is-it-working)).
+> Channel and category counts move every time you tighten a filter or the provider's lineup
+> changes — observed between 9,026 and 13,651 in a single week — so this document deliberately
+> gives ranges instead of a figure that is stale the moment it is written. For the live number, see
+> the latest build's summary or `get_live_streams` ([§1.3](#13-is-it-working)).
 
 > **Everything in Part 1 is done in a web browser.** No terminal, no CLI, no local install.
 > Part 2 is for developers and AI agents working on the code.
@@ -172,33 +172,31 @@ identical across provider rotations. That separation is the core of the design.
 
 Edit the file in GitHub's web editor, commit to `main`, and the push triggers a rebuild.
 
-**Which categories are kept** — `config/source.yml`, the `filter:` line:
+Filtering is two files working together, and **both must agree** — this is the single most common
+place to trip up:
 
-```yaml
-filter: '!ALL_CHAN! AND !DROP_NONENG!'
-```
+| File | Role |
+|---|---|
+| `config/template.yml` | *defines* named rules, e.g. `DROP_NONENG`, `DROP_RELIGION` |
+| `config/source.yml` | the `filter:` line *applies* them, e.g. `'!ALL_CHAN! AND !DROP_NONENG! AND !DROP_RELIGION!'` |
 
-**What those names mean** — `config/template.yml`:
+> **A template that `filter:` does not reference has no effect at all.** Adding a rule is always two
+> edits: define it in `template.yml`, then add `AND !YOUR_RULE!` to `filter:` in `source.yml`.
+> Equally, naming a template in `filter:` that doesn't exist fails the build.
 
-```yaml
-templates:
-  - name: ALL_CHAN
-    value: 'Group ~ ".*"'
-  - name: DROP_NONENG
-    value: 'Not (Group ~ "(?i)^(DK|CH|ARG|AR|PL|TR|PT|ES|BR|MX|IN|SE|IT|NL|FR|DE|…):")'
-```
+Each rule is a regular expression matched against the **category (group) name**:
 
-The playlist is currently **filtered to English-language groups**: `DROP_NONENG` removes any
-category whose name starts with one of those region prefixes. Add a prefix to drop that region;
-remove one to bring it back. This filter keeps roughly half of what the provider offers — about
-9–10k channels out of its ~300 raw categories — though the exact figure tracks the provider's
-lineup and changes week to week.
+- `(?i)` — case-insensitive
+- `^\s*` … `\s*(:|$)` — anchors to a whole group name, tolerating stray spaces, so `ES` matches the
+  group `ES: Sports` but never the word "ES" inside `BEST OF ES`
+- `NOT ( … )` — drop what matches; without `NOT` you'd *keep only* what matches
 
-Patterns are regular expressions matched against the category name: `(?i)` makes it
-case-insensitive and `^…:` anchors to the start of the name.
+To drop another region, add its prefix to the alternation inside `DROP_NONENG`. To bring one back,
+remove it. To drop an unrelated kind of content, add a new template (plus its `filter:` reference)
+rather than overloading an existing one — that's exactly what `DROP_RELIGION` is for.
 
-> A template that nothing references has **no effect**. To add a rule you must create the template
-> *and* reference it from `filter:`.
+See the two files for the rules currently in force; they are edited often enough that quoting them
+here would only go stale.
 
 **Include movies and series** — in `config/source.yml` set both to `false`:
 
@@ -304,6 +302,7 @@ build/
   verify_edge.py              27 live assertions against any base URL
   verify_renewal_policy.py    the renewal decision matrix (offline)
   verify_credential_persistence.py   credential-age persistence (offline)
+  verify_filter_config.py     source.yml <-> template.yml agreement (offline)
 functions/
   _middleware.js              runs on EVERY request, including static-asset hits — the auth gate
   _lib/auth.js                client credential checking
@@ -431,6 +430,7 @@ and a **skip** is printed loudly so a missing optional tool can never pass itsel
 |---|---|
 | `verify_renewal_policy.py` | the 24h-cadence / 12h-floor decision matrix, boundaries, unknown age, and that no case can reach the signup path |
 | `verify_credential_persistence.py` | extracts and executes the workflow's **own** `run:` blocks, proving a credential's age survives between builds |
+| `verify_filter_config.py` | `source.yml`'s `filter:` and `template.yml` agree — no undefined reference, no orphaned template that silently does nothing, every regex compiles |
 | `py_compile` | Python syntax across `build/` |
 | `node --check` | JS syntax — via a `.mjs` copy, since `node --check` parses a `.js` file as CommonJS and would wrongly reject these ES modules |
 | workflows parse | a broken workflow can't be caught by CI, because CI is the thing that breaks |

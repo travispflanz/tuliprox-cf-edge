@@ -126,6 +126,18 @@ def offline() -> None:
         record(f"{wf.name} parses", PASS if proc.returncode == 0 else FAIL,
                (proc.stderr.strip() or proc.stdout.strip())[:300])
 
+    print("\n=== offline: filter config consistency ===")
+    # The filter is split across two hand-edited files that must agree. Needs PyYAML, so it runs
+    # under whichever interpreter has it (see the workflow-parse note above).
+    if parser:
+        proc = run([parser, "build/verify_filter_config.py"])
+        summary = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.strip()), "")
+        record("source.yml filter and template.yml agree",
+               PASS if proc.returncode == 0 else FAIL,
+               f"{summary} :: {proc.stderr.strip()[:200]}".strip())
+    else:
+        record("source.yml filter and template.yml agree", SKIP, "no interpreter with PyYAML found")
+
     print("\n=== offline: documentation integrity ===")
     # Deleting a file and leaving a reference to it behind is invisible until a human follows the
     # link. Both of these fired for real when docs/ was folded into the README.

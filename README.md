@@ -417,6 +417,18 @@ reintroduce bugs that are painful to diagnose.
 11. **Trial accounts are `max_connections=1`.** One viewer at a time.
 12. **Individual channels are unreliable** — real IPTV has dead channels. Probe several and accept
     the first success; never assert on one hardcoded channel id.
+13. **The provider identity must never be hardcoded.** The acquisition script targets one named
+    third party; naming it in the tree pairs a working automated free-trial signup script with its
+    target the moment this repo is public. `PROVIDER_SITE`, `PANEL_URLS` and `TRIAL_EMAIL_BASE` are
+    therefore read from the environment with **no defaults** (repository secrets in CI), the script
+    exits 2 if one is unset, and the suite fails if any `http(s)://` literal ever returns to
+    `build/acquire_trial.py`. Use a **secret** rather than a variable: a variable whose value
+    reaches a log is public on a public repo, while secrets are masked — and the script logs the
+    site it contacts.
+14. **A wall of `401`s is a credentials symptom, not an outage symptom.** `build/verify_edge.py`
+    says so explicitly now, and exits `3` (distinct from a real assertion failure) so a caller can
+    tell the two apart. Nine times in ten it is a stale local `.dev.vars` — the client login is
+    rotated by changing GitHub secrets, and a local file does not follow.
 
 ## 2.6 Testing
 
@@ -486,7 +498,14 @@ always deploy from the repo root.
 |---|---|---|
 | `CLIENT_USER`, `CLIENT_PASS` | **yes** | what your players log in with; baked into playlist URLs at build time |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | **yes** | deploy to Pages |
+| `PROVIDER_SIGNUP_SITE`, `PROVIDER_PANEL_URLS`, `TRIAL_EMAIL_BASE` | **yes** | the **provider identity** — which third party, and which panels. Supplied only from secrets, so neither the code nor a public copy of this repo names it. See §2.5.13 |
 | `PROVIDER_URL`, `PROVIDER_USER`, `PROVIDER_PASS` | optional | bootstrap + fallback provider credential |
+| `IMPLAYER_INTEGRATION_KEY` | no | unused by this repo; belongs to the separate iMPlayer track |
+
+> The provider identity is a **secret**, not a variable, and deliberately has **no default in the
+> code**. If renewal ever logs `ERROR: PROVIDER_SITE is required`, one of these three secrets is
+> unset — the acquisition step fails safely (`continue-on-error`) and the credential already in
+> force keeps serving, so the edge stays up while you fix it.
 
 **GitHub repository variables** (non-secret) — [Settings → Variables → Actions](https://github.com/travispflanz/tuliprox-cf-edge/settings/variables/actions)
 
@@ -494,7 +513,6 @@ always deploy from the repo root.
 |---|---|---|
 | `RENEW_EVERY_HOURS` | `24` | renewal cadence |
 | `MIN_HOURS_LEFT` | `12` | renewal safety floor |
-| `TRIAL_EMAIL_BASE` | `taskgobbler` | local part used to mint `+alias` addresses |
 
 **Cloudflare Pages environment** — synced automatically by every build; don't edit by hand:
 `CLIENT_USER`, `CLIENT_PASS`, `UPSTREAM_URL`, `UPSTREAM_USER`, `UPSTREAM_PASS`.
@@ -555,11 +573,10 @@ Never print a value from here. Names and locations only — that is all you need
 | `PROVIDER_URL`, `PROVIDER_USER`, `PROVIDER_PASS` | GitHub secrets | *bootstrap + fallback only*. The credential actually in force lives in `.cred/provider.json` in a rolling Actions cache | nothing, if the cache is healthy — the cache wins over these |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | GitHub secrets | deploy to Pages, sync the Pages env | deploys only |
 | `IMPLAYER_INTEGRATION_KEY` | GitHub secret | **referenced by nothing in this repo.** It belongs to a separate track | nothing here |
-| `TRIAL_EMAIL_BASE` | repository variable (optional) | local part for the `+alias` addresses used at signup | nothing; defaults to `taskgobbler` |
+| `PROVIDER_SIGNUP_SITE`, `PROVIDER_PANEL_URLS`, `TRIAL_EMAIL_BASE` | GitHub secrets | the **provider identity**: which third party, and which panels. Kept out of the code entirely, so a public copy of this repo never names it | nothing in the code; if unset, renewal stops **non-fatally** and the credential in force keeps serving |
 
 **Repository variables: none are currently set**, so every documented default is in force
-(`RENEW_EVERY_HOURS` 24, `MIN_HOURS_LEFT` 12, `TRIAL_EMAIL_BASE` `taskgobbler`, and
-`STRICT_MAIN_GUARD` unset = advisory, see §3.5).
+(`RENEW_EVERY_HOURS` 24, `MIN_HOURS_LEFT` 12, and `STRICT_MAIN_GUARD` unset = advisory, see §3.5).
 
 **Cloudflare Pages**, project `tuliprox-edge-gateway`, production environment, holds:
 `CLIENT_USER`, `CLIENT_PASS`, `UPSTREAM_URL`, `UPSTREAM_USER`, `UPSTREAM_PASS` — the five the
@@ -661,6 +678,7 @@ Why the odd-looking things are the way they are. Each of these was paid for once
 | Three separate workflows | a `pull_request` trigger on the deploy workflow would publish unreviewed code and mint trials | §2.6 |
 | `README.md` absorbed the old `docs/` | the deleted files had gone stale and their claims were false; a second copy of the truth is worse than none | commit `4a7f955` |
 | Tiered change process | a uniform "always PR" rule would be ignored for `config/`, which is designed for direct commits | `CONTRIBUTING.md` |
+| The provider identity lives only in secrets | the code targets one named third party, and naming it in the tree would pair a working automated signup script with its target in a public repo. Pinned by a suite check, not by convention | §2.5.13 |
 
 ## 3.9 Rollback
 

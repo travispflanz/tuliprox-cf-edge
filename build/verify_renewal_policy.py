@@ -36,6 +36,14 @@ os.environ["CRED_FILE"] = str(CRED)
 for _k in ("PROVIDER_URL", "PROVIDER_USER", "PROVIDER_PASS", "GITHUB_OUTPUT"):
     os.environ.pop(_k, None)
 
+# These cases test the renewal DECISION, and acquire_trial deliberately carries no provider
+# defaults — naming the provider in the source is what would publish it. So supply an explicit
+# throwaway identity, set BEFORE the import because the module reads it at import time. Nothing
+# here is ever contacted: the signup path is stubbed to raise, below.
+os.environ["PROVIDER_SITE"] = "https://example.invalid"
+os.environ["PANEL_URLS"] = "http://panel.example"
+os.environ["TRIAL_EMAIL_BASE"] = "renewal-policy-test"
+
 sys.path.insert(0, str(REPO_ROOT / "build"))
 import acquire_trial as at  # noqa: E402
 

@@ -139,7 +139,14 @@ jobs:
         id: trial
         continue-on-error: true
         env:
-          TRIAL_EMAIL_BASE: ${{ vars.TRIAL_EMAIL_BASE || 'taskgobbler' }}
+          # The provider identity comes from SECRETS, never from a default in the code. This
+          # repository may be public, and naming the third party here would pair a working
+          # automated free-trial signup script with the provider it targets. Secrets rather than
+          # variables because a variable whose value reaches a log is public on a public repo,
+          # while secrets are masked — and the acquisition script prints the site it contacts.
+          PROVIDER_SITE: ${{ secrets.PROVIDER_SIGNUP_SITE }}
+          PANEL_URLS: ${{ secrets.PROVIDER_PANEL_URLS }}
+          TRIAL_EMAIL_BASE: ${{ secrets.TRIAL_EMAIL_BASE }}
           # Renewal cadence: replace the credential once a day. Trials here last ~36h, so a 24h
           # cadence leaves ~12h of overlap — the fresh credential always lands well before the old
           # one dies, so the playlist never has a window with a dead account, and the signup rate

@@ -2,31 +2,29 @@ name: Main guard (review-bypass advisory)
 
 # WHAT THIS IS FOR
 # ----------------
-# This repo's review rule is "code goes through a pull request". GitHub cannot enforce it
-# here: branch protection AND repository rulesets are both unavailable on a PRIVATE repo
-# on the Free plan (both REST endpoints answer 403 "Upgrade to GitHub Pro or make this
-# repository public"). A rule that cannot be enforced should not be silently skipped —
-# it should be made VISIBLE. That is this workflow's entire job.
+# This repo's review rule is "code goes through a pull request". Since 2026-10-29 that rule is
+# ENFORCED by a repository ruleset (`main: reviewed and verified`) — possible only because the
+# repository is public: on a private repo on the Free plan, branch protection and rulesets both
+# answer 403 "Upgrade to GitHub Pro or make this repository public".
+#
+# The ruleset carries a deliberate BYPASS for the owner account, because config/ changes are meant
+# to go straight to main from the browser (README 1.6). So exactly one hole remains, and it is
+# narrow and specific: the owner's own direct pushes. This workflow covers that hole by REPORTING
+# them. It cannot block — GitHub has already accepted the push by the time it runs.
 #
 # It is deliberately NOT noisy, because the change classes are not equal:
 #
-#   config/**    the documented operating path. Part 1 of the README tells the operator to
-#                edit config/template.yml in the browser and commit straight to main, and
-#                the push rebuilds the edge. Flagging that would train everyone to ignore
-#                this check, which would defeat it.
-#   everything   build/, functions/, .github/, Makefile and the docs can take the live edge
-#   else         down or invalidate the runbook, so they get the pull_request gate in ci.yml.
+#   config/**    the documented operating path — flagged only as information, never as a bypass
+#   everything   build/, functions/, .github/, Makefile and the docs can take the live edge down
+#   else         or invalidate the runbook, so they are the paths this reports on
 #
-# A bypass is only reported when a push did NOT come from a pull request AND touched one
-# of those code paths.
+# A bypass is only reported when a push did NOT come from a pull request AND touched one of those
+# code paths.
 #
-# TO MAKE IT BLOCKING (no code change needed):
-#   1. make the repo public, or move it to GitHub Pro; then
-#   2. add a ruleset / branch protection rule requiring a pull request and the required
-#      check `offline suite — no secrets, no network` (the job name in ci.yml); or
-#   3. set the repository variable STRICT_MAIN_GUARD=true to fail this job instead of
-#      warning. Useful as a tripwire, but note a red run does not undo a push — it only
-#      records that the rule was skipped.
+# TO CLOSE THE HOLE ENTIRELY: remove the owner bypass in Settings -> Rules, and accept that config/
+# edits then need a branch and a PR. Alternatively set the repository variable
+# STRICT_MAIN_GUARD=true to fail this job instead of warning — a tripwire, not a block, since a red
+# run does not undo a push.
 #
 # WHY NOT BLOCK BY DEFAULT: GitHub has already accepted the push by the time this runs, so
 # a failing job cannot prevent anything. It would only paint main red, which hides the

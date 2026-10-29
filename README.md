@@ -612,19 +612,26 @@ branch ──► pull request ──► ci.yml (offline suite) ──► merge t
 - `build/`, `functions/`, `.github/`, `Makefile` — branch → PR → green CI → merge.
 - `README.md`, `CONTRIBUTING.md`, `AGENTS.md` — PR, because docs are what everyone trusts later.
 
-**GitHub cannot enforce the review rule here.** Both classic branch protection *and* repository
-rulesets answer `403` on a private repo on the Free plan:
+**The review rule is enforced by a repository ruleset** — `main: reviewed and verified` (id
+`26122057`), active, on `main` only:
 
-```
-$ gh api repos/travispflanz/tuliprox-cf-edge/rulesets
-{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","status":403}
-```
+| Rule | Effect |
+|---|---|
+| `pull_request` | a change reaches `main` through a PR, not a direct push |
+| `required_status_checks` | the check **`offline suite — no secrets, no network`** must pass first |
+| `deletion` | `main` cannot be deleted |
+| `non_fast_forward` | no force-push over deployed history |
 
-So `.github/workflows/main-guard.yml` reports code that reached `main` outside a pull request
-instead. It **cannot block** — by the time it runs, the push has already landed. To make the rule
-real: make the repo public or move to Pro, then require a pull request and the check
-`offline suite — no secrets, no network`. For a tripwire today, set the variable
-`STRICT_MAIN_GUARD=true` and that guard fails instead of warning.
+This is possible because the repository is **public** — on a private repo on the Free plan both
+branch protection and rulesets answer `403`, which is why the rule was unenforceable before and why
+`.github/workflows/main-guard.yml` exists.
+
+**The owner account is on the bypass list on purpose.** `config/` changes are meant to go straight
+to `main` from the browser (README §1.6), and a blanket rule would break that operating path. So the
+owner can still push directly, and `main-guard.yml` exists to *report* exactly those pushes — the
+one case the ruleset deliberately lets through. To close that too, remove the bypass in
+[Settings → Rules](https://github.com/travispflanz/tuliprox-cf-edge/settings/rules) and accept that
+`config/` edits then need a branch and a PR.
 
 ## 3.6 Verifying without fooling yourself
 
@@ -655,7 +662,7 @@ understood — but all of them are open.
 
 | Gap | Detail | Status |
 |---|---|---|
-| Review rule is unenforced | branch protection and rulesets are `403` on a private Free repo; `main-guard.yml` only reports | open — fix by making the repo public or moving to Pro (§3.5) |
+| Review rule was unenforced | **RESOLVED** — the repo is public and the ruleset `main: reviewed and verified` requires a PR and a passing `offline suite` check. The owner retains a bypass so the browser `config/` path still works, and `main-guard.yml` reports those bypassed pushes | closed |
 | Leftover inert Pages env vars | production still carries `CLIENT_2_USER`, `CLIENT_2_PASS`, `UPSTREAM_2_URL`, `UPSTREAM_2_USER`, `UPSTREAM_2_PASS`, `UPSTREAM_HEALTHY_SLOTS` from a rolled-back dual-slot design. **Verified: no tracked file references any of them**, and the deploy syncs only the five real ones, so they are inert — but they mislead anyone reading the dashboard | cosmetic; safe to delete in the Cloudflare UI |
 | `.dev.vars` drifts silently | nothing keeps it in sync with the `CLIENT_*` secrets, so local live testing breaks quietly after any rotation (§3.6.1) | open — refresh by hand when you need it |
 | `STREAM_MODE` is never set | the runtime reads it (`redirect` skips the doomed proxy attempt), but no deploy sets it, so production always probes first | deliberate default; a knob, not a bug |

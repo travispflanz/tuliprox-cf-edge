@@ -73,6 +73,28 @@ check(
 print(f"      account status: {login.get('user_info', {}).get('status')} "
       f"exp={login.get('user_info', {}).get('exp_date')}")
 
+# A 401 here is the most misread result in this suite. Every check below it then fails as a
+# consequence, so the output reads as a total outage when the edge is perfectly healthy and the
+# CALLER's credentials are wrong. Say that out loud, and remember it for the exit code below.
+AUTH_REJECTED = (code == 401)
+if AUTH_REJECTED:
+    print()
+    print("=" * 78)
+    print("CREDENTIALS REJECTED (HTTP 401) — the edge answered and refused this login.")
+    print("Every check below fails as a consequence of this one result; it is not a second fault.")
+    print()
+    print("Check these, in order, before suspecting the edge:")
+    print("  1. A STALE LOCAL .dev.vars — by far the usual cause. The client login is rotated by")
+    print("     changing GitHub secrets, and a local file does not follow. GitHub secrets are")
+    print("     write-only, so refresh the file by hand rather than expecting it to sync.")
+    print("  2. CLIENT_USER / CLIENT_PASS not exported, or exported from an older shell.")
+    print("  3. A rotation with no BUILD since: the Pages environment is only refreshed by a")
+    print("     build, so fresh secrets plus an old deploy still 401s.")
+    print()
+    print("The authority on whether the edge is healthy is the DEPLOY's own 'Smoke-test the live")
+    print("edge' step — it uses the repository secrets — not this run.")
+    print("=" * 78)
+
 # 3. xtream catalogue ----------------------------------------------------------
 code, body, _ = req(f"/player_api.php?{Q}&action=get_live_categories")
 try:
@@ -203,4 +225,11 @@ if failed:
     print("FAILURES:")
     for name, _, detail in failed:
         print(f"  - {name} ({detail})")
+if AUTH_REJECTED:
+    # Exit 3, distinct from a genuine assertion failure, so a caller can tell "your credentials
+    # were refused" from "the edge is broken". Both are failures; only one is the edge's fault,
+    # and a monitor that cannot tell them apart wastes someone's evening.
+    print("\nVERDICT: credentials rejected — see the diagnostic above before treating this as an "
+          "edge outage.")
+    sys.exit(3)
 sys.exit(1 if failed else 0)

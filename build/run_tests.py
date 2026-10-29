@@ -178,6 +178,23 @@ def offline() -> None:
     record("no plaintext credential in tracked docs/config", FAIL if leaks else PASS,
            "; ".join(sorted(set(leaks))[:6]))
 
+    print("\n=== offline: provider hygiene ===")
+    # The acquisition script targets ONE named third party, and that is the single most sensitive
+    # thing in this project: it is what would let a provider connect an automated free-trial
+    # signup script to themselves. The property to pin is therefore "the code names no host, and
+    # the build supplies one" — both are cheap to check offline and cheap to break silently.
+    acq_path = REPO / "build" / "acquire_trial.py"
+    acq_text = acq_path.read_text(encoding="utf-8")
+    urls = re.findall(r"https?://[^\s\"')\]]+", acq_text)
+    record("acquire_trial.py names no provider host",
+           PASS if not urls else FAIL, "; ".join(sorted(set(urls))[:4]))
+
+    wf_text = (REPO / ".github" / "workflows" / "tuliprox-edge.yml").read_text(encoding="utf-8")
+    wired = [n for n in ("PROVIDER_SIGNUP_SITE", "PROVIDER_PANEL_URLS", "TRIAL_EMAIL_BASE")
+             if f"secrets.{n}" in wf_text]
+    record("the build supplies the provider identity from secrets",
+           PASS if len(wired) == 3 else FAIL, f"wired: {wired or 'none'}")
+
     print("\n=== offline: secret hygiene ===")
     # .cred/ carries live provider credentials between builds. If it were ever committable, a
     # working account would leak into git history, where it cannot be unsent.

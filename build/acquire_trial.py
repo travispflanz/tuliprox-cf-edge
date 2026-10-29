@@ -45,12 +45,20 @@ WHEN A RENEWAL IS DUE (--if-needed)
   is absent — the very first run, bootstrapping from repository secrets — the age is UNKNOWN and
   only the floor applies. Never assume fresh: assuming fresh is what would silently skip a renewal.
 
-Env:
+PROVIDER IDENTITY — REQUIRED, AND DELIBERATELY NOT DEFAULTED
+------------------------------------------------------------
+This script targets ONE named third party. Hardcoding who that is would pair a working automated
+free-trial signup script with the provider it targets the moment this repository is public, so the
+identity is supplied by the environment (repository secrets in CI) and the script refuses to run
+without it. Nothing in this file names a host.
+
+Env (REQUIRED — exits 2 if unset):
+  PROVIDER_SITE      the provider's trial-signup base URL
+  PANEL_URLS         comma-separated Xtream panel base URLs to race
+  TRIAL_EMAIL_BASE   local part to mint the signup aliases from
+Env (optional):
   TRIAL_EMAIL        full address to request with (default: a fresh alias, see below)
-  TRIAL_EMAIL_BASE   local part to mint aliases from (default taskgobbler)
   TRIAL_EMAIL_DOMAIN default gmail.com
-  PROVIDER_SITE      default https://www.weselliptv.com
-  PANEL_URLS         comma-separated, default http://kytv.xyz,http://kemotvpromax.xyz
   TRIAL_POLL_TRIES   default 40        TRIAL_POLL_WAIT default 1.5 (seconds)
   RENEW_EVERY_HOURS  default 24 — renewal cadence under --if-needed
   MIN_HOURS_LEFT     default 12 — renewal floor under --if-needed
@@ -59,7 +67,7 @@ Env:
 
 Writes status/username/password/url/email/expires to $GITHUB_OUTPUT when present
 (status is one of ok | reused | unverified | failed).
-Exit 0 on success, 1 on failure.
+Exit 0 on success, 1 on failure, 2 when a required setting is missing.
 """
 from __future__ import annotations
 
@@ -75,12 +83,30 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SITE = (os.environ.get("PROVIDER_SITE") or "https://www.weselliptv.com").rstrip("/")
-PANELS = [u.strip().rstrip("/") for u in
-          (os.environ.get("PANEL_URLS") or "http://kytv.xyz,http://kemotvpromax.xyz").split(",") if u.strip()]
-
-EMAIL_BASE = os.environ.get("TRIAL_EMAIL_BASE") or "taskgobbler"
+# The provider identity. Read from the environment with NO defaults — a default would name the
+# third party in this file, and this file is what gets published. Validated in main() rather than
+# here, so that importing this module stays free of side effects: the offline harnesses import it
+# to exercise the renewal logic and must not need to know who the provider is.
+SITE = (os.environ.get("PROVIDER_SITE") or "").strip().rstrip("/")
+PANELS = [u.strip().rstrip("/")
+          for u in (os.environ.get("PANEL_URLS") or "").split(",") if u.strip()]
+EMAIL_BASE = (os.environ.get("TRIAL_EMAIL_BASE") or "").strip()
 EMAIL_DOMAIN = os.environ.get("TRIAL_EMAIL_DOMAIN") or "gmail.com"
+
+
+def require_provider_identity() -> None:
+    """Fail loudly if the provider identity is absent — naming the setting, never a value.
+
+    Loud rather than silent because an empty value would be sent to the provider as a request to
+    the empty host, which surfaces as a confusing network error far from its real cause.
+    """
+    missing = [n for n, v in (("PROVIDER_SITE", SITE), ("PANEL_URLS", PANELS),
+                              ("TRIAL_EMAIL_BASE", EMAIL_BASE)) if not v]
+    if missing:
+        print(f"ERROR: missing required setting(s): {', '.join(missing)} — the provider identity "
+              f"is supplied by the environment (repository secrets in CI) and deliberately has no "
+              f"default in this file.", file=sys.stderr, flush=True)
+        sys.exit(2)
 
 # Ports the provider's own client races; kept identical to the site's behaviour.
 PROXY_PORTS = range(10010, 10040)
@@ -279,6 +305,7 @@ def verify_credential(user: str, pwd: str, attempts: int = 6, wait: int = 10) ->
 
 
 def main() -> int:
+    require_provider_identity()
     argv = sys.argv[1:]
     force = "--force" in argv
     if_needed = "--if-needed" in argv

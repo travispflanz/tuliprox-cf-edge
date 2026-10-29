@@ -11,13 +11,16 @@ step at all. A second scheduled workflow watches everything and opens a GitHub i
 |---|---|
 | **Live edge** | https://tuliprox-edge-gateway.pages.dev |
 | **Builds** | [Actions → Build & Deploy Tuliprox Xtream Edge](https://github.com/travispflanz/tuliprox-cf-edge/actions/workflows/tuliprox-edge.yml) |
+| **Pull requests** | [Actions → CI](https://github.com/travispflanz/tuliprox-cf-edge/actions/workflows/ci.yml) — the gate every code change passes before it can deploy |
+| **Change process** | `CONTRIBUTING.md` — and `AGENTS.md` if you are an AI agent |
 | **Health alerts** | [Issues labelled `edge-alert`](https://github.com/travispflanz/tuliprox-cf-edge/issues?q=label%3Aedge-alert) |
 | **Secrets** | [Settings → Secrets → Actions](https://github.com/travispflanz/tuliprox-cf-edge/settings/secrets/actions) |
 | **Cloudflare** | [dash.cloudflare.com](https://dash.cloudflare.com) → Workers & Pages → `tuliprox-edge-gateway` |
 | **Currently serving** | 10,312 channels across 163 categories, with EPG |
 
 > **Everything in Part 1 is done in a web browser.** No terminal, no CLI, no local install.
-> Part 2 is for developers and AI agents working on the code.
+> Part 2 is for developers working on the code, and **Part 3 is for whoever — human or AI
+> agent — has to take it over.**
 
 ---
 
@@ -284,7 +287,9 @@ Cloudflare; operable from a browser.
 
 ```
 Makefile                      make test / make test-live
-README.md                     this file — the only documentation
+README.md                     this file — the primary documentation: operate, develop, take over
+CONTRIBUTING.md               the change process: the tiers, the PR flow, what CI runs and cannot
+AGENTS.md                     cold-start page for an AI agent taking this over
 config/
   config.yml                  Tuliprox runtime config (one-shot CLI mode)
   source.yml                  the provider input + output targets + filter
@@ -310,8 +315,11 @@ functions/
   xmltv.php.js                EPG
   live, movie, series         stream routes (catch-all per type)
 .github/workflows/
-  tuliprox-edge.yml           build + deploy (cron 6h, push, dispatch)
+  tuliprox-edge.yml           build + deploy (cron 6h, push to main, dispatch)
   edge-monitor.yml            health watchdog (cron 30 */6)
+  ci.yml                      the pull-request gate — offline suite, no secrets, no deploy
+  main-guard.yml              reports code that reached main outside a pull request
+.github/pull_request_template.md   the reviewer's checklist
 .dev.vars.example             template for local Pages dev bindings
 ```
 
@@ -421,6 +429,18 @@ make test-live   # the above, plus 27 assertions against the deployed production
 can never check different things. It reports `pass / fail / skip`; only a **fail** breaks the suite,
 and a **skip** is printed loudly so a missing optional tool can never pass itself off as success.
 
+**Where it runs, and why those are three separate workflows:**
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `.github/workflows/ci.yml` | every **pull request** | runs the offline suite. No secrets, no network, no deploy — safe on any branch |
+| `.github/workflows/tuliprox-edge.yml` | push to `main`, cron 6h, dispatch | runs the **same** suite again, then builds and deploys |
+| `.github/workflows/edge-monitor.yml` | cron 30 */6 | runs the **live** group against the deployed edge and raises alerts |
+
+The deploy workflow is deliberately *not* triggered by pull requests: it holds secrets, publishes to
+the live edge and can mint a provider trial, so running it on an unmerged branch would deploy
+unreviewed code and spend signups as a side effect of opening a PR.
+
 | Check | Why it exists |
 |---|---|
 | `verify_renewal_policy.py` | the 24h-cadence / 12h-floor decision matrix, boundaries, unknown age, and that no case can reach the signup path |
@@ -482,3 +502,190 @@ always deploy from the repo root.
 **Monitor tuning** (`build/monitor_edge.py`): `WARN_HOURS` (6) warns only when automated renewal is
 *overdue* — deliberately below the 12h floor, so the normal cadence never generates noise;
 `STALE_HOURS` (14) catches a stopped schedule.
+
+---
+
+# Part 3 — Taking it over
+
+For whoever inherits this next: a human who has never seen it, or an AI agent starting cold (that
+one should read `AGENTS.md` first, then come back here).
+
+## 3.1 What you are actually inheriting
+
+A **live service with no server to log into.** Everything that runs, runs in GitHub Actions or on
+Cloudflare's edge. Consequences worth internalising before you touch anything:
+
+- **There is no machine to fix.** If it is not in git and not in Actions/Cloudflare, it does not exist.
+- **The only local state that matters is `.dev.vars`** (gitignored), and even that is *not* the
+  source of truth — it is a convenience for running the edge locally. Production reads GitHub
+  secrets and Pages environment variables.
+- **`main` is production.** A push to `main` deploys. There is no promotion step, no staging.
+- **Blast radius is small and human.** A handful of personal devices. An outage means someone's TV
+  stops, not a business stopping. That is why the alerting is issue-based rather than paging.
+
+## 3.2 Current state, and how to check it yourself
+
+Verified at the time of writing — re-verify rather than trusting this text:
+
+```bash
+gh run list --limit 5                                   # recent builds + monitor runs
+gh api repos/travispflanz/tuliprox-cf-edge/commits/main --jq .sha   # what main is at
+gh issue list --state open                              # any open edge-alert
+```
+
+| | |
+|---|---|
+| Deployed commit | whatever `main` is at — the build deploys that commit on every push and every 6h |
+| Production health | the deploy's final step runs the live suite; the monitor repeats it every 6h |
+| Open alerts | none, if `gh issue list --state open` is empty |
+| Build cadence | cron `0 */6 * * *` on `.github/workflows/tuliprox-edge.yml` |
+| Monitor cadence | cron `30 */6 * * *` on `.github/workflows/edge-monitor.yml` |
+
+**A green build is not proof the service works.** The build smoke-tests the live edge before going
+green, so green does mean "the edge answered" — but the monitor is what catches the edge failing
+*between* builds. Check both.
+
+## 3.3 Where every credential lives
+
+Never print a value from here. Names and locations only — that is all you need to reason about it.
+
+| Credential | Lives in | Purpose | Rotating it breaks |
+|---|---|---|---|
+| `CLIENT_USER`, `CLIENT_PASS` | GitHub secrets **and** Pages env | what players log in with; baked into playlist URLs at build time | **every player** must be re-pointed (README §1.7) |
+| `PROVIDER_URL`, `PROVIDER_USER`, `PROVIDER_PASS` | GitHub secrets | *bootstrap + fallback only*. The credential actually in force lives in `.cred/provider.json` in a rolling Actions cache | nothing, if the cache is healthy — the cache wins over these |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | GitHub secrets | deploy to Pages, sync the Pages env | deploys only |
+| `IMPLAYER_INTEGRATION_KEY` | GitHub secret | **referenced by nothing in this repo.** It belongs to a separate track | nothing here |
+| `TRIAL_EMAIL_BASE` | repository variable (optional) | local part for the `+alias` addresses used at signup | nothing; defaults to `taskgobbler` |
+
+**Repository variables: none are currently set**, so every documented default is in force
+(`RENEW_EVERY_HOURS` 24, `MIN_HOURS_LEFT` 12, `TRIAL_EMAIL_BASE` `taskgobbler`, and
+`STRICT_MAIN_GUARD` unset = advisory, see §3.5).
+
+**Cloudflare Pages**, project `tuliprox-edge-gateway`, production environment, holds:
+`CLIENT_USER`, `CLIENT_PASS`, `UPSTREAM_URL`, `UPSTREAM_USER`, `UPSTREAM_PASS` — the five the
+deploy syncs automatically. Do not edit them by hand; the next build overwrites them.
+
+## 3.4 The moving parts, and how each one fails
+
+| Component | Runs on | Cadence | How it fails | How you find out |
+|---|---|---|---|---|
+| Build + deploy | GitHub Actions | 6h, push to `main`, dispatch | run goes red; the previous deploy keeps serving | red run, and the monitor's staleness check |
+| Edge (Xtream API, M3U, EPG) | Cloudflare Pages Functions | always on | streams fail before the catalogue does | monitor alert → `edge-alert` issue |
+| Provider credential renewal | GitHub Actions, inside the build | 24h cadence, 12h floor | account lapses; catalogue still serves, **every stream fails** | monitor's `auth`/`status` check |
+| Health monitoring | GitHub Actions | 6h | silence | the staleness check is the only thing that catches a stopped schedule |
+| Provider itself | third party | — | drops channels, changes its panel, withdraws trials | channel counts change; the build fails if the API moves |
+
+The nastiest row is the third. A lapsed provider account is **not** obvious: the catalogue is a
+static snapshot, so it keeps serving perfectly while every stream 404s upstream. That is why the
+monitor checks the account separately from the edge.
+
+## 3.5 How a change reaches production
+
+`main` is the deploy trigger, so the process is the release process.
+
+```
+branch ──► pull request ──► ci.yml (offline suite) ──► merge to main
+                                                          │
+                                                          └──► tuliprox-edge.yml: suite → build → deploy → smoke test
+```
+
+**The process is tiered** (`CONTRIBUTING.md` explains it fully):
+
+- `config/` — the operator's file. **Direct to `main` is the designed path** (README §1.6). No PR.
+- `build/`, `functions/`, `.github/`, `Makefile` — branch → PR → green CI → merge.
+- `README.md`, `CONTRIBUTING.md`, `AGENTS.md` — PR, because docs are what everyone trusts later.
+
+**GitHub cannot enforce the review rule here.** Both classic branch protection *and* repository
+rulesets answer `403` on a private repo on the Free plan:
+
+```
+$ gh api repos/travispflanz/tuliprox-cf-edge/rulesets
+{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","status":403}
+```
+
+So `.github/workflows/main-guard.yml` reports code that reached `main` outside a pull request
+instead. It **cannot block** — by the time it runs, the push has already landed. To make the rule
+real: make the repo public or move to Pro, then require a pull request and the check
+`offline suite — no secrets, no network`. For a tripwire today, set the variable
+`STRICT_MAIN_GUARD=true` and that guard fails instead of warning.
+
+## 3.6 Verifying without fooling yourself
+
+```bash
+make test        # offline. The gate. No network, no credentials.
+make test-live   # + the live suite against the deployed edge. Needs real client credentials.
+```
+
+Four ways to get this wrong, all of them observed here:
+
+1. **A stale `.dev.vars` looks exactly like an outage.** `make test-live` reported *"7/22 checks
+   passed"* with a wall of `401`s while production was verifiably healthy — the deploy's own smoke
+   test and the monitor had both passed minutes earlier. The local file simply predated a client-login
+   rotation. **Before believing a live failure, check whether the build's smoke test passed.** If it
+   did, suspect your local credentials, not the service.
+2. **A SKIP is not a pass.** The suite prints skips loudly and does not fail on them. A missing node
+   silently removes the JS syntax check from a green run.
+3. **A check that has never failed has not been proven.** Inject the bug, watch it report FAIL, then
+   restore — with a **file copy**, never `git checkout --`, which restores from the index and eats
+   any unstaged work.
+4. **`make test` green does not mean the edge works.** It is offline by definition. Only
+   `make test-live` and the monitor touch the deployed service.
+
+## 3.7 Known gaps and unfinished business
+
+Honest inventory. None of these is a surprise to a careful reader, and each one is deliberate or
+understood — but all of them are open.
+
+| Gap | Detail | Status |
+|---|---|---|
+| Review rule is unenforced | branch protection and rulesets are `403` on a private Free repo; `main-guard.yml` only reports | open — fix by making the repo public or moving to Pro (§3.5) |
+| Leftover inert Pages env vars | production still carries `CLIENT_2_USER`, `CLIENT_2_PASS`, `UPSTREAM_2_URL`, `UPSTREAM_2_USER`, `UPSTREAM_2_PASS`, `UPSTREAM_HEALTHY_SLOTS` from a rolled-back dual-slot design. **Verified: no tracked file references any of them**, and the deploy syncs only the five real ones, so they are inert — but they mislead anyone reading the dashboard | cosmetic; safe to delete in the Cloudflare UI |
+| `.dev.vars` drifts silently | nothing keeps it in sync with the `CLIENT_*` secrets, so local live testing breaks quietly after any rotation (§3.6.1) | open — refresh by hand when you need it |
+| `STREAM_MODE` is never set | the runtime reads it (`redirect` skips the doomed proxy attempt), but no deploy sets it, so production always probes first | deliberate default; a knob, not a bug |
+| Single provider dependency | one provider, one panel type. If it withdraws free trials or changes its API, the build stops and there is no second source | design choice; the acquisition script is the piece to fork |
+| One viewer at a time | provider trials are `max_connections=1` | inherent to free trials; capacity would come from holding several accounts (the dual-slot design does exist, on `backup/pre-rollback`) |
+| Streams are HTTP, not HTTPS | the provider is an XUI.one panel with a self-signed certificate, so `https://` fails verification and the 302 must use `http://`. Some Android TV clients block cleartext by default | upstream limitation |
+
+## 3.8 Decision log
+
+Why the odd-looking things are the way they are. Each of these was paid for once.
+
+| Decision | Why | Where |
+|---|---|---|
+| Static Xtream JSON, not Tuliprox's output | Tuliprox's `xtream` output is a B+Tree only its own server can read | §2.5.1 |
+| Redirect (302) instead of proxying streams | the provider refuses datacenter IPs, and Cloudflare's egress is one — verified `200` residential vs `403` from Cloudflare | §2.5.3 |
+| Credential in an Actions cache, not a repo secret | `GITHUB_TOKEN` cannot rewrite a secret, so a secret can only bootstrap | §2.4 |
+| Acquisition is non-fatal | automation must never turn a working build into a broken one | §2.3 |
+| Renewal = cadence + floor, and nothing else | a second timing rule (a backoff) suppressed the retry it was meant to protect | §2.4 |
+| Pages uses direct upload, no Cloudflare Git integration | exactly one deploy path; a Git integration would race the workflow | — |
+| Three separate workflows | a `pull_request` trigger on the deploy workflow would publish unreviewed code and mint trials | §2.6 |
+| `README.md` absorbed the old `docs/` | the deleted files had gone stale and their claims were false; a second copy of the truth is worse than none | commit `4a7f955` |
+| Tiered change process | a uniform "always PR" rule would be ignored for `config/`, which is designed for direct commits | `CONTRIBUTING.md` |
+
+## 3.9 Rollback
+
+Three levels, fastest first.
+
+1. **Deployed files** — Cloudflare dashboard → Workers & Pages → `tuliprox-edge-gateway` →
+   Deployments → **Rollback to this deployment** on a known-good one. Instant, and it does not
+   touch git. Every build already keeps its own `<hash>.pages.dev` URL as a permanent preview.
+2. **Code** — `git revert <sha>`, merge, and the push redeploys. This is the normal route.
+3. **Everything including the credential** — note that the provider credential lives in an
+   **Actions cache**, not in git. Reverting code does **not** revert the credential. If a bad change
+   was in the renewal logic, delete the `provider-cred-*` cache entries (Actions → Caches) so the
+   next build re-bootstraps from `PROVIDER_*`.
+
+The rolled-back dual-slot design is preserved on the `backup/pre-rollback` branch. Do not delete it.
+
+## 3.10 The takeover test
+
+You can say you have taken this over when you can do all of these without help:
+
+- [ ] State what `main` deploys to, and what the deployed commit is right now.
+- [ ] Run `make test`, explain why it needs no credentials, and say what it does **not** cover.
+- [ ] Explain where the live provider credential is stored, and why it is not in a repository secret.
+- [ ] Find the last build, read its failed step if it failed, and say whether the edge is healthy.
+- [ ] Say what a lapsed provider account looks like (catalogue fine, every stream dead) and how the
+      monitor distinguishes it.
+- [ ] Ship a change through a pull request and watch CI gate it.
+- [ ] Roll production back, and say what rolling back does *not* restore.

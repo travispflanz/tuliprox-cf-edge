@@ -1,0 +1,75 @@
+name: CI (pull request gate)
+
+# The verification gate for changes that are REVIEWED before they reach main.
+#
+# Why this is a separate workflow instead of a trigger on the deploy pipeline:
+# `tuliprox-edge.yml` owns production. It runs on a push to main and on the 6-hour cron,
+# and it DEPLOYS to Cloudflare Pages and can MINT A PROVIDER TRIAL. Pointing a
+# `pull_request` trigger at it would publish unreviewed code to the live edge and spend
+# signups as a side effect of opening a PR. So the three jobs are kept apart on purpose:
+#
+#   ci.yml              pull_request   verify only — no secrets, no network, no deploy
+#   tuliprox-edge.yml   push to main   verify, then build and deploy
+#   edge-monitor.yml    cron           verify the DEPLOYED edge and raise alerts
+#
+# This workflow therefore holds NO secrets and runs nothing that can touch the provider
+# or Cloudflare, which is what makes it safe to run on a stranger's fork.
+#
+# The suite it runs is the same entrypoint used locally (`make test`), so a reviewer's
+# local result and this run can never disagree — that is the whole point of having one
+# entrypoint (build/run_tests.py) rather than checks written inline here.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push to the same PR supersedes its in-flight run.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: offline suite — no secrets, no network
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # node is required by the suite's JS syntax check, which parses every file under
+      # functions/ and build/*.mjs. Pinned to the same major the deploy job uses.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # No setup-python step, deliberately: the deploy job calls the suite with the
+      # runner's own python3, so calling it the same way here means CI and a deploy can
+      # never check different things. Keep these two invocations identical.
+      - name: Run the canonical suite
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/ci"
+          python3 build/run_tests.py 2>&1 | tee "$RUNNER_TEMP/ci/suite.log"
+
+      - name: Summarise into the run page
+        if: always()
+        run: |
+          LOG="$RUNNER_TEMP/ci/suite.log"
+          totals="$(grep -E '^=== [0-9]+ passed' "$LOG" || echo 'no summary line — the suite did not complete')"
+          {
+            echo "## Pull request gate"
+            echo ""
+            echo "\`\`\`"
+            echo "$totals"
+            echo "\`\`\`"
+            echo ""
+            echo "Offline by design: **no secrets, no network, no provider contact, no deploy.**"
+            echo ""
+            echo "A **SKIP** is printed loudly and does not fail — it means an optional tool was"
+            echo "missing, not that the check passed. Read the log above rather than trusting the tick."
+            echo ""
+            echo "This workflow cannot deploy. Merging to \`main\` is what deploys, via"
+            echo "\`tuliprox-edge.yml\`."
+          } >> "$GITHUB_STEP_SUMMARY"

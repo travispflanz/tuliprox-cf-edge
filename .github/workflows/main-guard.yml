@@ -1,0 +1,168 @@
+name: Main guard (review-bypass advisory)
+
+# WHAT THIS IS FOR
+# ----------------
+# This repo's review rule is "code goes through a pull request". GitHub cannot enforce it
+# here: branch protection AND repository rulesets are both unavailable on a PRIVATE repo
+# on the Free plan (both REST endpoints answer 403 "Upgrade to GitHub Pro or make this
+# repository public"). A rule that cannot be enforced should not be silently skipped —
+# it should be made VISIBLE. That is this workflow's entire job.
+#
+# It is deliberately NOT noisy, because the change classes are not equal:
+#
+#   config/**    the documented operating path. Part 1 of the README tells the operator to
+#                edit config/template.yml in the browser and commit straight to main, and
+#                the push rebuilds the edge. Flagging that would train everyone to ignore
+#                this check, which would defeat it.
+#   everything   build/, functions/, .github/, Makefile and the docs can take the live edge
+#   else         down or invalidate the runbook, so they get the pull_request gate in ci.yml.
+#
+# A bypass is only reported when a push did NOT come from a pull request AND touched one
+# of those code paths.
+#
+# TO MAKE IT BLOCKING (no code change needed):
+#   1. make the repo public, or move it to GitHub Pro; then
+#   2. add a ruleset / branch protection rule requiring a pull request and the required
+#      check `offline suite — no secrets, no network` (the job name in ci.yml); or
+#   3. set the repository variable STRICT_MAIN_GUARD=true to fail this job instead of
+#      warning. Useful as a tripwire, but note a red run does not undo a push — it only
+#      records that the rule was skipped.
+#
+# WHY NOT BLOCK BY DEFAULT: GitHub has already accepted the push by the time this runs, so
+# a failing job cannot prevent anything. It would only paint main red, which hides the
+# builds that genuinely broke.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  audit:
+    name: was this push reviewed?
+    runs-on: ubuntu-latest
+    env:
+      REPO: ${{ github.repository }}
+      BEFORE: ${{ github.event.before }}
+      AFTER: ${{ github.event.after }}
+      STRICT: ${{ vars.STRICT_MAIN_GUARD || 'false' }}
+    steps:
+      # fetch-depth 0 so the BEFORE..AFTER range is available to diff.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify the push
+        id: verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          ZERO="0000000000000000000000000000000000000000"
+
+          if [ -z "${AFTER:-}" ] || [ "$AFTER" = "$ZERO" ]; then
+            echo "no push payload (manual dispatch) — nothing to audit"
+            echo "verdict=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # How many pull requests does the tip commit belong to? 0 => pushed straight to main.
+          # gh prints its ERROR BODY to stdout, so only trust the value when it exited 0.
+          pr_count="unknown"
+          if prs="$(gh api "repos/$REPO/commits/$AFTER/pulls" --jq 'length' 2>/dev/null)"; then
+            pr_count="$prs"
+          fi
+          echo "pull requests containing $AFTER: $pr_count"
+          echo "pr_count=$pr_count" >> "$GITHUB_OUTPUT"
+
+          # Which paths this push touched. A first push (BEFORE is the zero sha) has no
+          # parent to diff against, so fall back to listing the tip commit itself.
+          if [ "$BEFORE" = "$ZERO" ]; then
+            changed="$(git show --name-only --format= "$AFTER")"
+          else
+            changed="$(git diff --name-only "$BEFORE".."$AFTER")"
+          fi
+          printf '%s\n' "$changed" | sed '/^$/d' > "$RUNNER_TEMP/changed.txt"
+          echo "--- changed paths ---"; cat "$RUNNER_TEMP/changed.txt"
+
+          # Code paths = anything that can break the edge or the runbook. config/ is
+          # deliberately excluded: direct-to-main is its designed path.
+          code="$(grep -E '^(build/|functions/|\.github/|Makefile$)' "$RUNNER_TEMP/changed.txt" || true)"
+          {
+            echo "code_paths<<EOF"
+            printf '%s\n' "$code"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$pr_count" = "0" ] && [ -n "$code" ]; then
+            verdict="bypass"
+          elif [ "$pr_count" = "0" ]; then
+            verdict="direct-but-within-process"
+          else
+            verdict="reviewed"
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          echo "verdict: $verdict"
+
+      - name: Report
+        if: always()
+        env:
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          PR_COUNT: ${{ steps.verdict.outputs.pr_count }}
+          CODE_PATHS: ${{ steps.verdict.outputs.code_paths }}
+        run: |
+          set -uo pipefail
+          case "$VERDICT" in
+            reviewed)
+              headline="Merged through a pull request — the \`ci\` gate ran on it." ;;
+            direct-but-within-process)
+              headline="Pushed straight to main, **operating input only** (\`config/\`). This is the documented browser path — nothing to do." ;;
+            bypass)
+              headline="**Code pushed straight to main without a pull request.**" ;;
+            *)
+              headline="Not a push — nothing to audit." ;;
+          esac
+
+          {
+            echo "## Main guard"
+            echo ""
+            echo "$headline"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commit | \`$AFTER\` |"
+            echo "| pull requests containing it | $PR_COUNT |"
+            echo "| verdict | \`$VERDICT\` |"
+            echo ""
+            if [ -n "${CODE_PATHS:-}" ]; then
+              echo "Code paths changed:"
+              echo ""
+              echo '```'
+              printf '%s\n' "$CODE_PATHS"
+              echo '```'
+            fi
+            if [ "$VERDICT" = "bypass" ]; then
+              echo ""
+              echo "### Why this is only a warning"
+              echo ""
+              echo "GitHub cannot block this here — branch protection and rulesets are both"
+              echo "unavailable on a private repo on the Free plan (the APIs answer 403). By the"
+              echo "time this job runs the commit is already on \`main\`. Failing the job would"
+              echo "only paint main red and hide builds that genuinely broke."
+              echo ""
+              echo "To make it blocking, see the header of \`.github/workflows/main-guard.yml\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+
+          if [ "$VERDICT" = "bypass" ]; then
+            echo "::warning::code reached main outside a pull request ($AFTER) — see the run summary"
+            if [ "${STRICT:-false}" = "true" ]; then
+              echo "::error::STRICT_MAIN_GUARD=true and this push bypassed review"
+              exit 1
+            fi
+          fi
